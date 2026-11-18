@@ -67,8 +67,11 @@ struct TipView(Tip);
 impl Render for TipView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let tip = &self.0;
+        // A fixed width so wrapped lines grow the box (with only a max width
+        // the box is sized for unwrapped text).
+        let long = tip.body.len() > 60 || tip.title.len() > 30;
         div()
-            .max_w(px(360.))
+            .w(px(if long { 340. } else { 220. }))
             .px(px(12.))
             .py(px(10.))
             .rounded(px(8.))
