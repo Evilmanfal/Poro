@@ -79,7 +79,7 @@ pub fn get_bytes(url: &str, fresh_for: Duration) -> Result<Vec<u8>> {
     }
 }
 
-fn fetch(url: &str) -> Result<Vec<u8>> {
+pub(crate) fn fetch(url: &str) -> Result<Vec<u8>> {
     let resp = client().get(url).send().with_context(|| format!("GET {url}"))?;
     let status = resp.status();
     if !status.is_success() {

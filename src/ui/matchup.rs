@@ -40,12 +40,13 @@ impl AppView {
         stats.ready().and_then(|m| m.get(&self.lane))
     }
 
+    /// Which patch the champion stats are from.
     fn patch_note(&self) -> String {
         let (dl, fell_back) = self.deeplol_patch();
         if fell_back {
-            format!("deeplol hasn't published {} yet; showing {dl}", self.patch_label())
+            format!("patch {dl} stats (deeplol hasn't published {} stats yet)", self.patch_label())
         } else {
-            format!("Patch {dl}")
+            format!("patch {dl} stats")
         }
     }
 
@@ -263,7 +264,7 @@ impl AppView {
         let (h2h, source) = if self.is_latest_patch() {
             (
                 self.h2h.ready().and_then(|m| m.get(&self.lane)).map(|h| (h.games, h.my_win_rate, h.enemy_win_rate)),
-                "deeplol live matchup data".to_string(),
+                "deeplol's latest matchup data (all recent games)".to_string(),
             )
         } else {
             let (dl, _) = self.deeplol_patch();
@@ -473,17 +474,27 @@ impl AppView {
         let Some(a) = self.a else { return div().into_any_element() };
         let name = data.champion_name(a);
         let general = self.lane_stats(&self.a_stats).map(|s| s.build_lst.clone()).unwrap_or_default();
+        let (dl_patch, _) = self.deeplol_patch();
         let (games, note): (Vec<crate::data::deeplol::Game>, Option<String>) = match (self.b, &self.history) {
             (None, _) => (Vec::new(), None),
-            (Some(_), Loadable::Ready(g)) => (g.clone(), None),
+            (Some(_), Loadable::Ready(_)) => {
+                let games = self.patch_games();
+                let note = (games.is_empty()).then(|| {
+                    format!("deeplol has no games of this matchup on patch {}; showing general builds.", self.patch_label())
+                });
+                (games, note)
+            }
             (Some(_), Loadable::Failed(e)) => (Vec::new(), Some(format!("Couldn't load the matchup history ({e}); showing general builds."))),
             (Some(_), _) => (Vec::new(), Some("Gathering this matchup's games from deeplol…".to_string())),
         };
         let summary = matchup_builds::summarize(&games, data, &general, 3);
         let enemy = self.b.map(|b| data.champion_name(b));
         let title = match &enemy {
-            Some(e) => format!("{name} {} builds vs {e} · from {} recent matchup games on deeplol", self.lane.label(), summary.sample),
-            None => format!("{name} {} builds · {}", self.lane.label(), self.patch_note()),
+            Some(e) if !games.is_empty() => {
+                format!("{name} {} builds vs {e} · from {}", self.lane.label(), self.patch_games_label(&games))
+            }
+            Some(e) => format!("{name} {} builds vs {e}", self.lane.label()),
+            None => format!("{name} {} builds · patch {dl_patch} (deeplol general builds)", self.lane.label()),
         };
         if summary.builds.is_empty() {
             return card()
@@ -513,13 +524,13 @@ impl AppView {
                 let keystone = data.rune_name(b.keystone);
                 let stats = match &b.general {
                     Some(g) => format!(
-                        "deeplol general build (not matchup-specific) · {} win rate · {} pick rate · {} games",
+                        "deeplol general build, patch {dl_patch} (not matchup-specific) · {} win rate · {} pick rate · {} games",
                         pct(g.win_rate * 100.0),
                         pct(g.pick_rate * 100.0),
                         thousands(g.games)
                     ),
                     None => format!(
-                        "Used in {} of {} games vs {} · {} won ({})",
+                        "Used in {} of these {} games vs {} · {} won ({})",
                         b.games,
                         summary.sample,
                         enemy.clone().unwrap_or_default(),

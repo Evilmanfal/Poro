@@ -235,6 +235,9 @@ pub struct Game {
     pub championship_name: String,
     #[serde(default)]
     pub player_name: String,
+    /// "pro", "streamer" or empty.
+    #[serde(default)]
+    pub pro_streamer_status: String,
     #[serde(default)]
     pub player_type: String,
     #[serde(default)]
@@ -253,6 +256,9 @@ pub struct Game {
     pub deaths: u32,
     #[serde(default)]
     pub assists: u32,
+    /// The patch the game was played on ("16.22"); filled in separately.
+    #[serde(skip)]
+    pub patch: Option<String>,
     pub rune: GameRune,
     pub spell: GameSpell,
     #[serde(default)]
@@ -306,14 +312,19 @@ pub struct ItemEvent {
 }
 
 impl Game {
+    pub fn is_streamer(&self) -> bool {
+        self.pro_streamer_status == "streamer"
+    }
+
     pub fn is_pro(&self) -> bool {
-        !self.championship_name.is_empty() || !self.player_name.is_empty()
+        self.pro_streamer_status == "pro"
+            || (self.pro_streamer_status.is_empty() && (named(&self.championship_name) || named(&self.player_name)))
     }
 
     pub fn display_name(&self) -> String {
-        if !self.championship_name.is_empty() {
+        if named(&self.championship_name) {
             self.championship_name.clone()
-        } else if !self.player_name.is_empty() {
+        } else if named(&self.player_name) {
             self.player_name.clone()
         } else {
             format!("{}#{}", self.riot_id_name, self.riot_id_tag_line)
@@ -347,8 +358,38 @@ impl Game {
     }
 }
 
+/// deeplol uses "" or "-" for "no name".
+fn named(s: &str) -> bool {
+    !s.trim().is_empty() && s.trim() != "-"
+}
+
 /// Recent pro and high-elo games of the matchup, 10 per page (deeplol's
 /// latest data; it has no patch filter).
+/// The patch a game was played on ("16.22"). The game list doesn't say, so
+/// this reads the game's match details (about 150 KB) and keeps only the
+/// patch number on disk; a game's patch never changes.
+pub fn game_patch(match_id: &str) -> Result<String> {
+    let dir = super::cache_dir().join("patches");
+    let path = dir.join(match_id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "_"));
+    if let Ok(v) = std::fs::read_to_string(&path) {
+        if !v.trim().is_empty() {
+            return Ok(v.trim().to_string());
+        }
+    }
+    let platform = match_id.split('_').next().unwrap_or("KR");
+    let bytes = super::fetch(&format!("{API}/match/match-cached?match_id={match_id}&platform_id={platform}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let version = v
+        .pointer("/match_basic_dict/game_version")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| anyhow::anyhow!("no patch in match {match_id}"))?;
+    // "16.22.123.4567" -> "16.22"
+    let patch: String = version.split('.').take(2).collect::<Vec<_>>().join(".");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&path, &patch);
+    Ok(patch)
+}
+
 pub fn games(champion: u32, enemy: u32, page: u32) -> Result<Vec<Game>> {
     #[derive(Deserialize)]
     struct File {

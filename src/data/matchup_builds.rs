@@ -70,7 +70,33 @@ pub fn all_games(champion: u32, enemy: u32) -> Result<Vec<Game>> {
             Err(_) => break,
         }
     }
+    // Look up each game's patch, 10 at a time.
+    for chunk in out.chunks_mut(10) {
+        std::thread::scope(|s| {
+            for g in chunk.iter_mut() {
+                s.spawn(move || g.patch = deeplol::game_patch(&g.match_id).ok());
+            }
+        });
+    }
     Ok(out)
+}
+
+/// "1 on 16.23, 26 on 16.22, 16 on 16.21", newest patch first.
+pub fn patch_breakdown(games: &[Game]) -> String {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for g in games {
+        let p = g.patch.clone().unwrap_or_else(|| "unknown patch".into());
+        match counts.iter_mut().find(|(k, _)| *k == p) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((p, 1)),
+        }
+    }
+    let key = |p: &str| -> (u32, u32) {
+        let mut it = p.split('.').map(|x| x.parse().unwrap_or(0));
+        (it.next().unwrap_or(0), it.next().unwrap_or(0))
+    };
+    counts.sort_by(|a, b| key(&b.0).cmp(&key(&a.0)));
+    counts.into_iter().map(|(p, n)| format!("{n} on {p}")).collect::<Vec<_>>().join(", ")
 }
 
 /// The finished items of a game in the order they were bought.

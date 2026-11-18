@@ -91,10 +91,8 @@ pub struct AppView {
     pub tips: Loadable<Tips>,
     /// Every game deeplol has of this matchup (for the matchup builds).
     pub history: Loadable<Vec<Game>>,
-    pub games: Vec<Game>,
-    pub games_page: u32,
-    pub games_state: Loadable<()>,
-    pub games_done: bool,
+    /// How many of the matchup's games the list shows.
+    pub games_shown: usize,
     pub pros_only: bool,
     pub expanded: Option<String>,
     pub skills: HashMap<u32, Vec<String>>,
@@ -167,10 +165,7 @@ impl AppView {
             h2h: Loadable::Idle,
             tips: Loadable::Idle,
             history: Loadable::Idle,
-            games: Vec::new(),
-            games_page: 0,
-            games_state: Loadable::Idle,
-            games_done: false,
+            games_shown: GAMES_PAGE,
             pros_only: false,
             expanded: None,
             skills: HashMap::new(),
@@ -386,10 +381,7 @@ impl AppView {
         self.h2h = Loadable::Idle;
         self.tips = Loadable::Idle;
         self.history = Loadable::Idle;
-        self.games.clear();
-        self.games_page = 0;
-        self.games_done = false;
-        self.games_state = Loadable::Idle;
+        self.games_shown = GAMES_PAGE;
         self.expanded = None;
         if let Some(b) = self.b {
             self.b_stats = Loadable::Loading;
@@ -419,35 +411,29 @@ impl AppView {
                     this.history = Loadable::from(r);
                 }
             });
-            self.load_more_games(cx);
         }
         cx.notify();
     }
 
-    pub fn load_more_games(&mut self, cx: &mut Context<Self>) {
-        let (Some(a), Some(b)) = (self.a, self.b) else { return };
-        if self.games_state.is_loading() || self.games_done {
-            return;
+    /// The matchup's games for the selected patch. On the live patch that's
+    /// every recent game (the live patch alone has too few); on an older
+    /// patch, only games played on it.
+    pub fn patch_games(&self) -> Vec<Game> {
+        let Some(all) = self.history.ready() else { return Vec::new() };
+        if self.is_latest_patch() {
+            return all.clone();
         }
-        let gen = self.gen;
-        let page = self.games_page + 1;
-        self.games_state = Loadable::Loading;
-        spawn_job(cx, move || deeplol::games(a, b, page), move |this, r, _| {
-            if this.gen != gen {
-                return;
-            }
-            match r {
-                Ok(list) => {
-                    this.games_page = page;
-                    this.games_done = list.len() < 10;
-                    let seen: Vec<String> = this.games.iter().map(|g| g.match_id.clone()).collect();
-                    this.games.extend(list.into_iter().filter(|g| !seen.contains(&g.match_id)));
-                    this.games_state = Loadable::Ready(());
-                }
-                Err(e) => this.games_state = Loadable::Failed(format!("{e:#}")),
-            }
-        });
-        cx.notify();
+        let patch = self.patch_label();
+        all.iter().filter(|g| g.patch.as_deref() == Some(patch)).cloned().collect()
+    }
+
+    /// What `patch_games` covers, for headings.
+    pub fn patch_games_label(&self, games: &[Game]) -> String {
+        if self.is_latest_patch() {
+            format!("{} recent games ({})", games.len(), matchup_builds::patch_breakdown(games))
+        } else {
+            format!("{} games on patch {}", games.len(), self.patch_label())
+        }
     }
 
     pub fn reload_counters(&mut self, cx: &mut Context<Self>) {
@@ -710,6 +696,9 @@ impl AppView {
             .into_any_element()
     }
 }
+
+/// Games shown at a time in the games list.
+pub const GAMES_PAGE: usize = 10;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Slot {

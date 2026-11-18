@@ -97,18 +97,32 @@ impl AppView {
     pub fn render_games(&mut self, data: &StaticData, cx: &mut Context<Self>) -> AnyElement {
         let (Some(a), Some(b)) = (self.a, self.b) else { return div().into_any_element() };
         let pros_only = self.pros_only;
-        let games: Vec<Game> = self.games.iter().filter(|g| !pros_only || g.is_pro()).cloned().collect();
-        let rows: Vec<AnyElement> = games.iter().map(|g| self.render_game(data, g, cx)).collect();
-        let footer = match &self.games_state {
+        let patch_games = self.patch_games();
+        let all: Vec<Game> = patch_games.iter().filter(|g| !pros_only || (g.is_pro() || g.is_streamer())).cloned().collect();
+        let shown = self.games_shown.min(all.len());
+        let rows: Vec<AnyElement> = all[..shown].iter().map(|g| self.render_game(data, g, cx)).collect();
+        let footer = match &self.history {
             Loadable::Loading => div().text_color(rgb(MUTED)).text_size(px(13.)).child("Loading games…").into_any_element(),
             Loadable::Failed(e) => div().text_color(rgb(RED)).text_size(px(13.)).child(format!("Couldn't load games: {e}")).into_any_element(),
-            _ if self.games_done => div()
+            _ if all.is_empty() => div()
                 .text_color(rgb(MUTED))
                 .text_size(px(13.))
-                .child(if self.games.is_empty() { "No recorded games of this matchup yet." } else { "That's every game deeplol has." })
+                .child(if self.is_latest_patch() {
+                    "No recorded games of this matchup yet.".to_string()
+                } else {
+                    format!("deeplol has no games of this matchup on patch {}.", self.patch_label())
+                })
                 .into_any_element(),
-            _ => button("more-games", "Load more games")
-                .on_click(cx.listener(|this, _, _, cx| this.load_more_games(cx)))
+            _ if shown >= all.len() => div()
+                .text_color(rgb(MUTED))
+                .text_size(px(13.))
+                .child(format!("That's all {} games.", all.len()))
+                .into_any_element(),
+            _ => button("more-games", format!("Show more ({} more)", all.len() - shown))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.games_shown += super::GAMES_PAGE;
+                    cx.notify();
+                }))
                 .into_any_element(),
         };
         let filter = |id: &'static str, label: &'static str, active: bool, value: bool, cx: &mut Context<Self>| {
@@ -128,7 +142,8 @@ impl AppView {
                 }))
                 .child(label)
         };
-        let pro_count = self.games.iter().filter(|g| g.is_pro()).count();
+        let pro_count = patch_games.iter().filter(|g| g.is_pro() || g.is_streamer()).count();
+        let scope = if self.history.ready().is_some() { self.patch_games_label(&patch_games) } else { String::new() };
         card()
             .flex()
             .flex_col()
@@ -145,11 +160,13 @@ impl AppView {
                     )))
                     .child(div().flex_1())
                     .child(filter("all-games", "All", !pros_only, false, cx))
-                    .child(filter("pro-games", if pro_count > 0 { "Pros only" } else { "Pros only (none loaded yet)" }, pros_only, true, cx)),
+                    .child(filter("pro-games", if pro_count > 0 { "Pros & streamers" } else { "Pros & streamers (none here)" }, pros_only, true, cx)),
             )
-            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(
-                "deeplol's latest games (not filtered by patch). Click a game for its full build.",
-            ))
+            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(if self.is_latest_patch() {
+                format!("{scope} · every recent game deeplol has (pick an older patch to see only its games). Click a game for its full build.")
+            } else {
+                format!("{scope}. Click a game for its full build.")
+            }))
             .children(rows)
             .child(div().flex().justify_center().child(footer))
             .into_any_element()
@@ -185,16 +202,17 @@ impl AppView {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .when(g.is_pro(), |d| {
+                    .when(g.is_pro() || g.is_streamer(), |d| {
+                        let (label, color) = if g.is_pro() { ("PRO", GOLD) } else { ("STREAMER", 0xb48cff) };
                         d.child(
                             div()
                                 .px(px(5.))
                                 .rounded(px(3.))
-                                .bg(rgb(GOLD))
+                                .bg(rgb(color))
                                 .text_color(rgb(0x1a1a1a))
                                 .text_size(px(10.))
                                 .font_weight(FontWeight::BOLD)
-                                .child("PRO"),
+                                .child(label),
                         )
                     })
                     .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).truncate().child(g.display_name())),
@@ -204,11 +222,27 @@ impl AppView {
                 if g.tier.is_empty() { "Ranked".to_string() } else { g.tier.clone() },
                 if g.player_type == "OTP" { "One-trick" } else { "" }
             )))
-            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(format!(
-                "{} | {}",
-                time_ago(g.game_end_time),
-                duration(g.game_duration)
-            )));
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .children(g.patch.clone().map(|p| {
+                        div()
+                            .px(px(4.))
+                            .rounded(px(3.))
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .text_size(px(10.))
+                            .text_color(rgb(TEXT))
+                            .child(p)
+                    }))
+                    .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(format!(
+                        "{} | {}",
+                        time_ago(g.game_end_time),
+                        duration(g.game_duration)
+                    ))),
+            );
 
         let summary = div()
             .id(SharedString::from(format!("game-{}", g.match_id)))
