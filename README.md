@@ -1,0 +1,30 @@
+# Matchup
+
+A lightweight Rust + GPUI desktop app for League of Legends:
+
+- **Champion Matchup**: deeplol.gg's matchup view (deeplol.gg/llm). It shows the selected champion's tier, rank,
+  win/pick/ban rate and games; head-to-head win rate and sample size; Weak Against; skills; level 1–6
+  advantage and tips; popular builds; and real games of the matchup by pros and high-elo players, each with its full
+  rune page, spells, items, skill order and item timeline.
+- **Counters**: lolalytics.com's counters list (win rate vs, all-champs win rate, Δ1, Δ2, games), sortable.
+  Click a row to open that matchup.
+- **Patches**: the live patch plus the 5 before it. deeplol is usually one patch behind; the app says when it
+  falls back to deeplol's newest patch.
+- **Add runes**: sends a build's rune page (and summoner spells, in champ select) to the League client running on
+  this PC through its local API. Pages made by the app are named `MU: …`, and each new import reuses that slot.
+  The app follows champ select by itself: it fills in your champion, lane and lane opponent (click the status
+  pill to turn that off).
+
+Icons come from Riot's Data Dragon (champions, items, spells, runes, skills) and CommunityDragon (stat shards).
+
+## Data sources
+deeplol.gg and lolalytics.com have no public API. The app calls the same JSON endpoints their own pages use
+(`b2c-api-cdn.deeplol.gg`, `a1.lolalytics.com/mega`). These are unofficial and can change without notice.
+Every response is cached in `%LOCALAPPDATA%\Matchup\cache`. Live data refreshes every 30 minutes; if a site is
+unreachable, the app shows the last good copy.
+
+## Build
+```powershell
+./build.ps1 build -Release   # target/release/matchup.exe
+```
+GPUI 0.2.2 is vendored with Neo's idle-CPU patch (`vendor/gpui/NEO-PATCH.md`).

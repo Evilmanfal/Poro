@@ -1,0 +1,306 @@
+//! Riot's Data Dragon: the official static data for every patch (champion
+//! list and IDs, rune trees, summoner spells, icons).
+
+use std::collections::HashMap;
+
+use anyhow::Result;
+use serde::Deserialize;
+
+use super::{get_json, LIVE, STATIC};
+
+const CDN: &str = "https://ddragon.leagueoflegends.com/cdn";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Lane {
+    Top,
+    Jungle,
+    Middle,
+    Bottom,
+    Support,
+}
+
+impl Lane {
+    pub const ALL: [Lane; 5] = [Lane::Top, Lane::Jungle, Lane::Middle, Lane::Bottom, Lane::Support];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Lane::Top => "TOP",
+            Lane::Jungle => "JUNGLE",
+            Lane::Middle => "MID",
+            Lane::Bottom => "BOT",
+            Lane::Support => "SUPPORT",
+        }
+    }
+
+    /// deeplol's lane keys.
+    pub fn deeplol(self) -> &'static str {
+        match self {
+            Lane::Top => "Top",
+            Lane::Jungle => "Jungle",
+            Lane::Middle => "Middle",
+            Lane::Bottom => "Bot",
+            Lane::Support => "Supporter",
+        }
+    }
+
+    pub fn from_deeplol(s: &str) -> Option<Lane> {
+        Lane::ALL.into_iter().find(|l| l.deeplol() == s)
+    }
+
+    /// lolalytics' lane names.
+    pub fn lolalytics(self) -> &'static str {
+        match self {
+            Lane::Top => "top",
+            Lane::Jungle => "jungle",
+            Lane::Middle => "middle",
+            Lane::Bottom => "bottom",
+            Lane::Support => "support",
+        }
+    }
+
+    pub fn from_lolalytics(s: &str) -> Option<Lane> {
+        Lane::ALL.into_iter().find(|l| l.lolalytics() == s)
+    }
+
+    /// The League client's `assignedPosition` names.
+    pub fn from_client(s: &str) -> Option<Lane> {
+        match s {
+            "top" => Some(Lane::Top),
+            "jungle" => Some(Lane::Jungle),
+            "middle" => Some(Lane::Middle),
+            "bottom" => Some(Lane::Bottom),
+            "utility" => Some(Lane::Support),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Champion {
+    /// Numeric key (Orianna = 61): what deeplol and the League client use.
+    pub key: u32,
+    /// Data Dragon id ("MonkeyKing"): used in icon URLs.
+    pub id: String,
+    /// Display name ("Wukong").
+    pub name: String,
+}
+
+impl Champion {
+    /// lolalytics' URL name: the display name, lowercase letters only.
+    pub fn lolalytics_slug(&self) -> String {
+        match self.id.as_str() {
+            "Nunu" => "nunu".into(),
+            "Renata" => "renata".into(),
+            _ => self.name.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct Rune {
+    pub id: u32,
+    pub name: String,
+    pub icon: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StaticData {
+    /// Newest first, e.g. "16.23.1".
+    pub versions: Vec<String>,
+    pub champions: Vec<Champion>,
+    by_key: HashMap<u32, usize>,
+    /// Rune trees and runes, by id.
+    pub runes: HashMap<u32, Rune>,
+    /// Summoner spells by numeric key.
+    pub spells: HashMap<u32, (String, String)>,
+}
+
+impl StaticData {
+    pub fn latest(&self) -> &str {
+        self.versions.first().map(String::as_str).unwrap_or("16.23.1")
+    }
+
+    pub fn champion(&self, key: u32) -> Option<&Champion> {
+        self.by_key.get(&key).map(|&i| &self.champions[i])
+    }
+
+    pub fn champion_name(&self, key: u32) -> String {
+        self.champion(key).map(|c| c.name.clone()).unwrap_or_else(|| format!("#{key}"))
+    }
+
+    pub fn champion_icon(&self, key: u32) -> Option<String> {
+        self.champion(key).map(|c| format!("{CDN}/{}/img/champion/{}.png", self.latest(), c.id))
+    }
+
+    pub fn item_icon(&self, item: u32) -> String {
+        format!("{CDN}/{}/img/item/{item}.png", self.latest())
+    }
+
+    /// Icon URL for a rune tree, rune or stat shard.
+    pub fn rune_icon(&self, id: u32) -> Option<String> {
+        self.runes.get(&id).map(|r| r.icon.clone())
+    }
+
+    pub fn rune_name(&self, id: u32) -> String {
+        self.runes.get(&id).map(|r| r.name.clone()).unwrap_or_else(|| shard_name(id).to_string())
+    }
+
+    pub fn spell_icon(&self, key: u32) -> Option<String> {
+        self.spells.get(&key).map(|(id, _)| format!("{CDN}/{}/img/spell/{id}.png", self.latest()))
+    }
+
+    /// Champions whose name starts with (then contains) `query`, ignoring
+    /// case, spaces and punctuation.
+    pub fn search(&self, query: &str) -> Vec<&Champion> {
+        let q: String = query.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let norm = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+        let mut starts: Vec<&Champion> = Vec::new();
+        let mut contains: Vec<&Champion> = Vec::new();
+        for c in &self.champions {
+            let n = norm(&c.name);
+            if n.starts_with(&q) {
+                starts.push(c);
+            } else if n.contains(&q) {
+                contains.push(c);
+            }
+        }
+        starts.extend(contains);
+        starts
+    }
+}
+
+/// Stat shards aren't in Data Dragon's rune data.
+pub fn shard_name(id: u32) -> &'static str {
+    match id {
+        5001 => "Scaling Health",
+        5002 => "Armor",
+        5003 => "Magic Resist",
+        5005 => "Attack Speed",
+        5007 => "Ability Haste",
+        5008 => "Adaptive Force",
+        5010 => "Move Speed",
+        5011 => "Health",
+        5013 => "Tenacity & Slow Resist",
+        _ => "Shard",
+    }
+}
+
+#[derive(Deserialize)]
+struct ChampionFile {
+    data: HashMap<String, ChampionEntry>,
+}
+#[derive(Deserialize)]
+struct ChampionEntry {
+    id: String,
+    key: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RuneStyle {
+    id: u32,
+    name: String,
+    icon: String,
+    slots: Vec<RuneSlot>,
+}
+#[derive(Deserialize)]
+struct RuneSlot {
+    runes: Vec<RuneEntry>,
+}
+#[derive(Deserialize)]
+struct RuneEntry {
+    id: u32,
+    name: String,
+    icon: String,
+}
+
+const CDRAGON: &str = "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default";
+const CDRAGON_PERKS: &str =
+    "https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/perks.json";
+
+#[derive(Deserialize)]
+struct CdragonPerk {
+    id: u32,
+    name: String,
+    #[serde(rename = "iconPath")]
+    icon_path: String,
+}
+
+#[derive(Deserialize)]
+struct SummonerFile {
+    data: HashMap<String, SummonerEntry>,
+}
+#[derive(Deserialize)]
+struct SummonerEntry {
+    id: String,
+    key: String,
+    name: String,
+}
+
+pub fn load() -> Result<StaticData> {
+    let versions: Vec<String> = get_json("https://ddragon.leagueoflegends.com/api/versions.json", LIVE)?;
+    let v = versions.first().cloned().unwrap_or_default();
+
+    let champs: ChampionFile = get_json(&format!("{CDN}/{v}/data/en_US/champion.json"), STATIC)?;
+    let mut champions: Vec<Champion> = champs
+        .data
+        .into_values()
+        .filter_map(|c| Some(Champion { key: c.key.parse().ok()?, id: c.id, name: c.name }))
+        .collect();
+    champions.sort_by(|a, b| a.name.cmp(&b.name));
+    let by_key = champions.iter().enumerate().map(|(i, c)| (c.key, i)).collect();
+
+    let styles: Vec<RuneStyle> = get_json(&format!("{CDN}/{v}/data/en_US/runesReforged.json"), STATIC)?;
+    let mut runes = HashMap::new();
+    for s in styles {
+        runes.insert(s.id, Rune { id: s.id, name: s.name, icon: format!("{CDN}/img/{}", s.icon) });
+        for slot in s.slots {
+            for r in slot.runes {
+                runes.insert(r.id, Rune { id: r.id, name: r.name, icon: format!("{CDN}/img/{}", r.icon) });
+            }
+        }
+    }
+    // Stat shard icons only exist in CommunityDragon's copy of the client data.
+    if let Ok(perks) = get_json::<Vec<CdragonPerk>>(CDRAGON_PERKS, STATIC) {
+        for p in perks.into_iter().filter(|p| (5000..5100).contains(&p.id)) {
+            let path = p.icon_path.trim_start_matches("/lol-game-data/assets/").to_lowercase();
+            runes.insert(p.id, Rune { id: p.id, name: p.name, icon: format!("{CDRAGON}/{path}") });
+        }
+    }
+
+    let sums: SummonerFile = get_json(&format!("{CDN}/{v}/data/en_US/summoner.json"), STATIC)?;
+    let spells = sums.data.into_values().filter_map(|s| Some((s.key.parse().ok()?, (s.id, s.name)))).collect();
+
+    Ok(StaticData { versions, champions, by_key, runes, spells })
+}
+
+/// A champion's passive and Q/W/E/R icons.
+pub fn skill_icons(data: &StaticData, champ: &Champion) -> Result<Vec<String>> {
+    #[derive(Deserialize)]
+    struct File {
+        data: HashMap<String, Detail>,
+    }
+    #[derive(Deserialize)]
+    struct Detail {
+        passive: Img,
+        spells: Vec<Img>,
+    }
+    #[derive(Deserialize)]
+    struct Img {
+        image: ImgFile,
+    }
+    #[derive(Deserialize)]
+    struct ImgFile {
+        full: String,
+    }
+    let v = data.latest();
+    let file: File = get_json(&format!("{CDN}/{v}/data/en_US/champion/{}.json", champ.id), STATIC)?;
+    let d = file.data.into_values().next().ok_or_else(|| anyhow::anyhow!("no champion data"))?;
+    let mut out = vec![format!("{CDN}/{v}/img/passive/{}", d.passive.image.full)];
+    out.extend(d.spells.into_iter().map(|s| format!("{CDN}/{v}/img/spell/{}", s.image.full)));
+    Ok(out)
+}
