@@ -2738,6 +2738,13 @@ fn handle_tooltip_mouse_move(
         }
         // These are handled in check_visible_and_update.
         Some(ActiveTooltip::Visible { .. }) | Some(ActiveTooltip::WaitingForHide { .. }) => {
+            // POROPATCH: hiding happens during prepaint, and with the idle
+            // vsync patch an idle window doesn't repaint just because the
+            // mouse moved, so the tooltip lingered. Ask for a frame once the
+            // element is no longer hovered.
+            if !check_is_hovered(window) {
+                window.refresh();
+            }
             Action::None
         }
     };
