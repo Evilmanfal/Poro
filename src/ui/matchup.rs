@@ -8,6 +8,7 @@ use super::games::{rune_page_row, skill_order_row};
 use super::theme::*;
 use super::{AppView, Loadable, Slot};
 use crate::data::ddragon::{Lane, StaticData};
+use crate::data::matchup_builds;
 use crate::data::deeplol::LaneStats;
 use crate::images;
 use crate::text_input::TextInput;
@@ -466,37 +467,70 @@ impl AppView {
             .into_any_element()
     }
 
+    /// Up to 3 builds for this exact matchup, from deeplol's matchup history
+    /// (filled up with deeplol's general builds when the matchup has fewer).
     fn render_builds(&mut self, data: &StaticData, cx: &mut Context<Self>) -> AnyElement {
         let Some(a) = self.a else { return div().into_any_element() };
         let name = data.champion_name(a);
-        let builds = self.lane_stats(&self.a_stats).map(|s| s.build_lst.clone()).unwrap_or_default();
-        if builds.is_empty() {
-            return div().into_any_element();
+        let general = self.lane_stats(&self.a_stats).map(|s| s.build_lst.clone()).unwrap_or_default();
+        let (games, note): (Vec<crate::data::deeplol::Game>, Option<String>) = match (self.b, &self.history) {
+            (None, _) => (Vec::new(), None),
+            (Some(_), Loadable::Ready(g)) => (g.clone(), None),
+            (Some(_), Loadable::Failed(e)) => (Vec::new(), Some(format!("Couldn't load the matchup history ({e}); showing general builds."))),
+            (Some(_), _) => (Vec::new(), Some("Gathering this matchup's games from deeplol…".to_string())),
+        };
+        let summary = matchup_builds::summarize(&games, data, &general, 3);
+        let enemy = self.b.map(|b| data.champion_name(b));
+        let title = match &enemy {
+            Some(e) => format!("{name} {} builds vs {e} · from {} recent matchup games on deeplol", self.lane.label(), summary.sample),
+            None => format!("{name} {} builds · {}", self.lane.label(), self.patch_note()),
+        };
+        if summary.builds.is_empty() {
+            return card()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(section_title(title))
+                .child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(note.unwrap_or_else(|| "No builds yet.".into())))
+                .into_any_element();
         }
-        let rows: Vec<AnyElement> = builds
+        let rows: Vec<AnyElement> = summary
+            .builds
             .iter()
             .enumerate()
-            .take(2)
             .map(|(i, b)| {
-                let runes = b.runes().map(|p| rune_page_row(data, &p, 28., cx));
+                let runes = rune_page_row(data, &b.runes, 28., cx);
                 let spells: Vec<AnyElement> =
-                    b.spell.build.iter().map(|&s| images::icon(data.spell_icon(s).as_deref(), 28., cx)).collect();
-                let start: Vec<AnyElement> =
-                    b.start_item.build.iter().map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx)).collect();
-                let items: Vec<AnyElement> =
-                    b.item.build.iter().map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx)).collect();
-                let skills = skill_order_row(&b.skill.detail, 15);
-                let page = b.runes();
-                let spell_pair = match b.spell.build.as_slice() {
-                    [s1, s2, ..] => Some((*s1, *s2)),
-                    _ => None,
+                    [b.spells.0, b.spells.1].iter().map(|&s| images::icon(data.spell_icon(s).as_deref(), 28., cx)).collect();
+                let start: Vec<AnyElement> = b.starter.iter().map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx)).collect();
+                let items: Vec<AnyElement> = b
+                    .items
+                    .iter()
+                    .chain(b.boots.iter())
+                    .map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx))
+                    .collect();
+                let skills = skill_order_row(&b.skills, 15);
+                let keystone = data.rune_name(b.keystone);
+                let stats = match &b.general {
+                    Some(g) => format!(
+                        "deeplol general build (not matchup-specific) · {} win rate · {} pick rate · {} games",
+                        pct(g.win_rate * 100.0),
+                        pct(g.pick_rate * 100.0),
+                        thousands(g.games)
+                    ),
+                    None => format!(
+                        "Used in {} of {} games vs {} · {} won ({})",
+                        b.games,
+                        summary.sample,
+                        enemy.clone().unwrap_or_default(),
+                        b.wins,
+                        pct(b.wins as f64 * 100.0 / b.games.max(1) as f64)
+                    ),
                 };
-                let label = format!("{name} {}", self.lane.label());
-                let apply = page.map(|page| {
-                    primary_button(SharedString::from(format!("apply-build-{i}")), "Add runes").on_click(cx.listener(
-                        move |this, _, _, cx| this.apply(label.clone(), page.clone(), spell_pair, cx),
-                    ))
-                });
+                let label = format!("{name} {} {keystone}", b.style);
+                let page = b.runes.clone();
+                let spell_pair = Some(b.spells);
+                let style_color = style_color(&b.style);
                 div()
                     .flex()
                     .flex_col()
@@ -510,14 +544,25 @@ impl AppView {
                             .items_center()
                             .gap(px(10.))
                             .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(format!("Build {}", i + 1)))
-                            .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(format!(
-                                "{} win rate · {} pick rate · {} games",
-                                pct(b.win_rate * 100.0),
-                                pct(b.pick_rate * 100.0),
-                                thousands(b.games)
-                            )))
+                            .child(
+                                div()
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(rgb(style_color))
+                                    .text_color(rgb(0x111114))
+                                    .text_size(px(12.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(b.style.clone()),
+                            )
+                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child(keystone))
+                            .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(stats))
                             .child(div().flex_1())
-                            .children(apply),
+                            .child(
+                                primary_button(SharedString::from(format!("apply-build-{i}")), "Add runes").on_click(cx.listener(
+                                    move |this, _, _, cx| this.apply(label.clone(), page.clone(), spell_pair, cx),
+                                )),
+                            ),
                     )
                     .child(
                         div()
@@ -525,10 +570,10 @@ impl AppView {
                             .flex_wrap()
                             .items_center()
                             .gap(px(22.))
-                            .children(runes)
+                            .child(runes)
                             .child(labeled("Spells", div().flex().gap(px(4.)).children(spells)))
                             .child(labeled("Starter", div().flex().gap(px(4.)).children(start)))
-                            .child(labeled("Core", div().flex().gap(px(4.)).children(items))),
+                            .child(labeled("Items (buy order)", div().flex().gap(px(4.)).children(items))),
                     )
                     .child(skills)
                     .into_any_element()
@@ -538,9 +583,23 @@ impl AppView {
             .flex()
             .flex_col()
             .gap(px(10.))
-            .child(section_title(format!("{name} {} builds · {}", self.lane.label(), self.patch_note())))
+            .child(section_title(title))
+            .children(note.map(|n| div().text_size(px(12.)).text_color(rgb(MUTED)).child(n)))
             .children(rows)
             .into_any_element()
+    }
+}
+
+/// A color per build style.
+fn style_color(style: &str) -> u32 {
+    match style {
+        "AP" | "AP Bruiser" => 0x9b8cff,
+        "Lethality" => 0xf2c14e,
+        "Crit" | "On-hit" => 0xf29b4e,
+        "Bruiser" | "AD" => 0xe8605e,
+        "Tank" => 0x5b8cf5,
+        "Hybrid" => 0x37c8ab,
+        _ => 0x8b8d98,
     }
 }
 

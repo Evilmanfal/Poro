@@ -114,6 +114,27 @@ pub struct StaticData {
     pub runes: HashMap<u32, Rune>,
     /// Summoner spells by numeric key.
     pub spells: HashMap<u32, (String, String)>,
+    /// Items by id, with what kind of stats they give.
+    pub items: HashMap<u32, ItemInfo>,
+}
+
+/// What an item is, for naming builds (AP, AD, Lethality, …).
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)]
+pub struct ItemInfo {
+    pub name: String,
+    /// A finished item (not a component, consumable or boots).
+    pub legendary: bool,
+    /// Finished boots (tier 2 or upgraded).
+    pub boots: bool,
+    pub ap: bool,
+    pub ad: bool,
+    pub lethality: bool,
+    pub crit: bool,
+    pub on_hit: bool,
+    pub health: bool,
+    /// Armor or magic resist without damage.
+    pub tank: bool,
 }
 
 impl StaticData {
@@ -275,7 +296,62 @@ pub fn load() -> Result<StaticData> {
     let sums: SummonerFile = get_json(&format!("{CDN}/{v}/data/en_US/summoner.json"), STATIC)?;
     let spells = sums.data.into_values().filter_map(|s| Some((s.key.parse().ok()?, (s.id, s.name)))).collect();
 
-    Ok(StaticData { versions, champions, by_key, runes, spells })
+    let items = load_items(&v).unwrap_or_default();
+
+    Ok(StaticData { versions, champions, by_key, runes, spells, items })
+}
+
+fn load_items(v: &str) -> Result<HashMap<u32, ItemInfo>> {
+    #[derive(Deserialize)]
+    struct File {
+        data: HashMap<String, Item>,
+    }
+    #[derive(Deserialize)]
+    struct Item {
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default)]
+        stats: HashMap<String, f64>,
+        #[serde(default)]
+        into: Vec<String>,
+        gold: Gold,
+        #[serde(default)]
+        maps: HashMap<String, bool>,
+    }
+    #[derive(Deserialize)]
+    struct Gold {
+        total: u32,
+    }
+    let file: File = get_json(&format!("{CDN}/{v}/data/en_US/item.json"), STATIC)?;
+    let mut out = HashMap::new();
+    for (id, it) in file.data {
+        let Ok(id) = id.parse::<u32>() else { continue };
+        let has = |s: &str| it.stats.get(s).is_some_and(|v| *v > 0.0);
+        let tag = |t: &str| it.tags.iter().any(|x| x == t);
+        let on_rift = it.maps.get("11").copied().unwrap_or(true);
+        let is_boots = tag("Boots");
+        let ap = has("FlatMagicDamageMod");
+        let ad = has("FlatPhysicalDamageMod");
+        out.insert(
+            id,
+            ItemInfo {
+                legendary: on_rift && !is_boots && it.into.is_empty() && it.gold.total >= 2200 && !tag("Consumable"),
+                boots: on_rift && is_boots && it.gold.total >= 900,
+                ap,
+                ad,
+                lethality: it.description.contains("Lethality"),
+                crit: has("FlatCritChanceMod"),
+                on_hit: tag("OnHit") && has("PercentAttackSpeedMod"),
+                health: has("FlatHPPoolMod"),
+                tank: (has("FlatArmorMod") || has("FlatSpellBlockMod")) && !ap && !ad,
+                name: it.name,
+            },
+        );
+    }
+    Ok(out)
 }
 
 /// A champion's passive and Q/W/E/R icons.

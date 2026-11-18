@@ -15,6 +15,7 @@ use gpui::{div, prelude::*, px, AnyElement, Context, Entity, FocusHandle, Focusa
 use crate::data::ddragon::{self, Lane, StaticData};
 use crate::data::deeplol::{self, Game, HeadToHead, LaneStats, RunePage, Tips, Versions};
 use crate::data::lolalytics::{self, Counters};
+use crate::data::matchup_builds;
 use crate::lcu::{ChampSelect, Lcu};
 use crate::text_input::{Submitted, TextInput};
 use theme::*;
@@ -88,6 +89,8 @@ pub struct AppView {
     pub b_stats: Loadable<HashMap<Lane, LaneStats>>,
     pub h2h: Loadable<HashMap<Lane, HeadToHead>>,
     pub tips: Loadable<Tips>,
+    /// Every game deeplol has of this matchup (for the matchup builds).
+    pub history: Loadable<Vec<Game>>,
     pub games: Vec<Game>,
     pub games_page: u32,
     pub games_state: Loadable<()>,
@@ -163,6 +166,7 @@ impl AppView {
             b_stats: Loadable::Idle,
             h2h: Loadable::Idle,
             tips: Loadable::Idle,
+            history: Loadable::Idle,
             games: Vec::new(),
             games_page: 0,
             games_state: Loadable::Idle,
@@ -381,6 +385,7 @@ impl AppView {
         self.b_stats = Loadable::Idle;
         self.h2h = Loadable::Idle;
         self.tips = Loadable::Idle;
+        self.history = Loadable::Idle;
         self.games.clear();
         self.games_page = 0;
         self.games_done = false;
@@ -406,6 +411,12 @@ impl AppView {
             spawn_job(cx, move || deeplol::tips(a, b), move |this, r, _| {
                 if this.gen == gen {
                     this.tips = Loadable::from(r);
+                }
+            });
+            self.history = Loadable::Loading;
+            spawn_job(cx, move || matchup_builds::all_games(a, b), move |this, r, _| {
+                if this.gen == gen {
+                    this.history = Loadable::from(r);
                 }
             });
             self.load_more_games(cx);

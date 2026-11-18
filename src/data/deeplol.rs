@@ -146,7 +146,7 @@ impl Build {
 }
 
 /// A complete rune page, in the order the League client wants it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct RunePage {
     pub primary_style: u32,
     pub sub_style: u32,
