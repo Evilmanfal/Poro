@@ -1,5 +1,5 @@
 //! Single-line text input, adapted from GPUI's `examples/input.rs`
-//! (Zed Industries, Apache-2.0) and restyled for Matchup (copied from Neo).
+//! (Zed Industries, Apache-2.0) and restyled for Poro (copied from Neo).
 
 use std::ops::Range;
 

@@ -4,9 +4,9 @@ use gpui::{div, prelude::*, px, AnyElement, Context, FontWeight, SharedString, W
 
 use super::matchup::lane_chips;
 use super::theme::*;
+use super::tips;
 use super::{AppView, Loadable, Slot, SortCol};
 use crate::data::lolalytics::Counter;
-use crate::images;
 
 impl AppView {
     pub fn render_counters(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -51,7 +51,7 @@ impl AppView {
                 let rows: Vec<AnyElement> = list
                     .iter()
                     .map(|x| {
-                        let icon = images::icon(data.champion_icon(x.cid).as_deref(), 30., cx);
+                        let icon = tips::champ(&data, x.cid, 30., false, cx);
                         let enemy = x.cid;
                         div()
                             .id(SharedString::from(format!("counter-{}", x.cid)))

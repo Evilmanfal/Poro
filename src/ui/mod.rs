@@ -5,6 +5,7 @@ mod counters;
 mod games;
 mod matchup;
 mod theme;
+mod tips;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -70,6 +71,7 @@ pub enum SortCol {
 
 pub struct AppView {
     focus: FocusHandle,
+    logo: Arc<gpui::Image>,
     pub data: Option<Arc<StaticData>>,
     pub startup_error: Option<String>,
     pub dl_versions: Option<Versions>,
@@ -95,7 +97,7 @@ pub struct AppView {
     pub games_shown: usize,
     pub pros_only: bool,
     pub expanded: Option<String>,
-    pub skills: HashMap<u32, Vec<String>>,
+    pub skills: HashMap<u32, Vec<ddragon::Skill>>,
     gen: u64,
     a_gen: u64,
 
@@ -148,6 +150,7 @@ impl AppView {
 
         let mut view = AppView {
             focus: cx.focus_handle(),
+            logo: Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, include_bytes!("../../assets/poro.png").to_vec())),
             data: None,
             startup_error: None,
             dl_versions: None,
@@ -337,7 +340,7 @@ impl AppView {
             cx,
             move || {
                 let champ = data.champion(key).ok_or_else(|| anyhow::anyhow!("unknown champion"))?;
-                ddragon::skill_icons(&data, champ)
+                ddragon::skills(&data, champ)
             },
             move |this, r, _| {
                 if let Ok(icons) = r {
@@ -664,7 +667,8 @@ impl AppView {
             .bg(rgb(TOP_BAR))
             .border_b_1()
             .border_color(rgb(BORDER))
-            .child(div().text_size(px(16.)).font_weight(gpui::FontWeight::BOLD).text_color(rgb(ACCENT)).mr(px(10.)).child("Matchup"))
+            .child(gpui::img(self.logo.clone()).size(px(30.)).flex_none())
+            .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::BOLD).text_color(rgb(TEXT)).mr(px(10.)).child("Poro"))
             .child(tab("Champion Matchup", Tab::Matchup, self, cx))
             .child(tab("Counters", Tab::Counters, self, cx))
             .child(div().flex_1())
@@ -725,6 +729,7 @@ impl Focusable for AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        tips::reset_ids();
         let top = self.render_top_bar(cx);
         let body = if let Some(err) = &self.startup_error {
             div().p(px(24.)).text_color(rgb(RED)).child(format!("Couldn't load game data: {err}")).into_any_element()

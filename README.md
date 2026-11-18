@@ -1,4 +1,4 @@
-# Matchup
+# Poro
 
 A lightweight Rust + GPUI desktop app for League of Legends:
 
@@ -11,7 +11,7 @@ A lightweight Rust + GPUI desktop app for League of Legends:
 - **Patches**: the live patch plus the 5 before it. deeplol is usually one patch behind; the app says when it
   falls back to deeplol's newest patch.
 - **Add runes**: sends a build's rune page (and summoner spells, in champ select) to the League client running on
-  this PC through its local API. Pages made by the app are named `MU: …`, and each new import reuses that slot.
+  this PC through its local API. Pages made by the app are named `Poro: …`, and each new import reuses that slot.
   The app follows champ select by itself: it fills in your champion, lane and lane opponent (click the status
   pill to turn that off).
 
@@ -20,11 +20,15 @@ Icons come from Riot's Data Dragon (champions, items, spells, runes, skills) and
 ## Data sources
 deeplol.gg and lolalytics.com have no public API. The app calls the same JSON endpoints their own pages use
 (`b2c-api-cdn.deeplol.gg`, `a1.lolalytics.com/mega`). These are unofficial and can change without notice.
-Every response is cached in `%LOCALAPPDATA%\Matchup\cache`. Live data refreshes every 30 minutes; if a site is
+Every response is cached in `%LOCALAPPDATA%\Poro\cache`. Live data refreshes every 30 minutes; if a site is
 unreachable, the app shows the last good copy.
+
+## Icon
+`assets/poro.ico` (embedded in the exe) and `assets/poro.png` (the in-app logo) are made by
+`./assets/make_icon.ps1 <transparent png>`.
 
 ## Build
 ```powershell
-./build.ps1 build -Release   # target/release/matchup.exe
+./build.ps1 build -Release   # target/release/poro.exe
 ```
 GPUI 0.2.2 is vendored with Neo's idle-CPU patch (`vendor/gpui/NEO-PATCH.md`).

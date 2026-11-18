@@ -31,7 +31,13 @@ pub fn client() -> &'static reqwest::blocking::Client {
 
 pub fn cache_dir() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("Matchup").join("cache")
+    let poro = base.join("Poro");
+    // Keep the cache from when the app was called Matchup.
+    let old = base.join("Matchup");
+    if !poro.exists() && old.exists() {
+        let _ = std::fs::rename(&old, &poro);
+    }
+    poro.join("cache")
 }
 
 fn cache_path(url: &str) -> PathBuf {

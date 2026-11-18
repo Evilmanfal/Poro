@@ -5,21 +5,15 @@ use gpui::{div, prelude::*, px, AnyElement, App, Context, FontWeight, SharedStri
 
 use super::matchup::labeled;
 use super::theme::*;
+use super::tips;
 use super::{AppView, Loadable};
 use crate::data::ddragon::StaticData;
 use crate::data::deeplol::{Game, RunePage};
-use crate::images;
 
 /// Primary tree + keystone + 3 runes, secondary tree + 2 runes, 3 shards.
 pub fn rune_page_row(data: &StaticData, page: &RunePage, size: f32, cx: &mut App) -> AnyElement {
     let rune = |id: u32, s: f32, cx: &mut App| {
-        div()
-            .id(SharedString::from(format!("rune-{id}-{s}")))
-            .rounded_full()
-            .bg(rgb(0x15151a))
-            .child(images::round(data.rune_icon(id).as_deref(), s, cx))
-            .tooltip(tooltip_text(data.rune_name(id)))
-            .into_any_element()
+        div().rounded_full().bg(rgb(0x15151a)).child(tips::rune(data, id, s, cx)).into_any_element()
     };
     let p = page.perks;
     let primary = div()
@@ -50,27 +44,6 @@ pub fn rune_page_row(data: &StaticData, page: &RunePage, size: f32, cx: &mut App
         div().flex().items_center().gap(px(14.)).child(primary).child(secondary).child(shards),
     )
     .into_any_element()
-}
-
-fn tooltip_text(text: String) -> impl Fn(&mut gpui::Window, &mut App) -> gpui::AnyView + 'static {
-    move |_, cx| cx.new(|_| Tooltip(text.clone())).into()
-}
-
-struct Tooltip(String);
-
-impl Render for Tooltip {
-    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(8.))
-            .py(px(4.))
-            .rounded(px(5.))
-            .bg(rgb(0x111115))
-            .border_1()
-            .border_color(rgb(BORDER))
-            .text_size(px(12.))
-            .text_color(rgb(TEXT))
-            .child(self.0.clone())
-    }
 }
 
 /// Q W E R boxes for each level, R highlighted.
@@ -179,14 +152,14 @@ impl AppView {
         let page = g.runes();
         let kda = if g.deaths == 0 { (g.kills + g.assists) as f64 } else { (g.kills + g.assists) as f64 / g.deaths as f64 };
 
-        let me = images::round(data.champion_icon(g.champion_id).as_deref(), 40., cx);
-        let them = images::round(data.champion_icon(g.enemy_champion_id).as_deref(), 34., cx);
-        let keystone = images::round(data.rune_icon(page.perks[0]).as_deref(), 26., cx);
-        let sub = images::round(data.rune_icon(page.sub_style).as_deref(), 20., cx);
+        let me = tips::champ(data, g.champion_id, 40., true, cx);
+        let them = tips::champ(data, g.enemy_champion_id, 34., true, cx);
+        let keystone = tips::rune(data, page.perks[0], 26., cx);
+        let sub = tips::rune(data, page.sub_style, 20., cx);
         let spells: Vec<AnyElement> =
-            [g.spell.spell_1, g.spell.spell_2].iter().map(|&s| images::icon(data.spell_icon(s).as_deref(), 22., cx)).collect();
+            [g.spell.spell_1, g.spell.spell_2].iter().map(|&s| tips::spell(data, s, 22., cx)).collect();
         let items: Vec<AnyElement> =
-            g.item_final.iter().take(7).map(|&it| images::icon(Some(&data.item_icon(it)), 26., cx)).collect();
+            g.item_final.iter().take(7).map(|&it| tips::item(data, it, 26., cx)).collect();
 
         let name = format!("{} {} vs {}", g.display_name(), data.champion_name(g.champion_id), data.champion_name(g.enemy_champion_id));
         let spell_pair = Some((g.spell.spell_1, g.spell.spell_2));
@@ -313,15 +286,15 @@ impl AppView {
         let runes = rune_page_row(data, &g.runes(), 28., cx);
         let shards: Vec<String> = g.runes().perks[6..].iter().map(|&s| data.rune_name(s)).collect();
         let spells: Vec<AnyElement> =
-            [g.spell.spell_1, g.spell.spell_2].iter().map(|&s| images::icon(data.spell_icon(s).as_deref(), 28., cx)).collect();
-        let start: Vec<AnyElement> = g.item_start.iter().map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx)).collect();
-        let core: Vec<AnyElement> = g.item_core.iter().map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx)).collect();
+            [g.spell.spell_1, g.spell.spell_2].iter().map(|&s| tips::spell(data, s, 28., cx)).collect();
+        let start: Vec<AnyElement> = g.item_start.iter().map(|&it| tips::item(data, it, 28., cx)).collect();
+        let core: Vec<AnyElement> = g.item_core.iter().map(|&it| tips::item(data, it, 28., cx)).collect();
         let skills = skill_order_row(&g.skill_order(), 18);
         let timeline: Vec<AnyElement> = g
             .purchases()
             .into_iter()
             .map(|(minute, items)| {
-                let icons: Vec<AnyElement> = items.iter().map(|&it| images::icon(Some(&data.item_icon(it)), 26., cx)).collect();
+                let icons: Vec<AnyElement> = items.iter().map(|&it| tips::item(data, it, 26., cx)).collect();
                 div()
                     .flex()
                     .flex_col()

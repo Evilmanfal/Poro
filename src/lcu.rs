@@ -120,7 +120,10 @@ impl Lcu {
 
         let mut editable = pages.iter().filter(|p| deletable(p)).count();
         for p in pages.iter().filter(|p| deletable(p)) {
-            let ours = p.get("name").and_then(Value::as_str).is_some_and(|n| n.starts_with(PAGE_PREFIX));
+            let ours = p
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|n| n.starts_with(PAGE_PREFIX) || n.starts_with(OLD_PAGE_PREFIX));
             if let (true, Some(id)) = (ours, id_of(p)) {
                 self.request(reqwest::Method::DELETE, &format!("/lol-perks/v1/pages/{id}"), None)?;
                 editable -= 1;
@@ -170,7 +173,9 @@ impl Lcu {
 
 /// Rune pages made by this app start with this, so the next import reuses
 /// their slot instead of touching the player's own pages.
-const PAGE_PREFIX: &str = "MU: ";
+const PAGE_PREFIX: &str = "Poro: ";
+/// What pages were called before the app was renamed.
+const OLD_PAGE_PREFIX: &str = "MU: ";
 const MAX_PAGE_NAME: usize = 30;
 
 /// (port, password) of the running client.

@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Matchup: League of Legends champion matchups (deeplol.gg), counters
+//! Poro: League of Legends champion matchups (deeplol.gg), counters
 //! (lolalytics.com) and one-click rune pages for the League client.
 
 mod data;
@@ -18,7 +18,7 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions { title: Some("Matchup".into()), ..Default::default() }),
+                titlebar: Some(TitlebarOptions { title: Some("Poro".into()), ..Default::default() }),
                 window_min_size: Some(size(px(1100.), px(640.))),
                 ..Default::default()
             },

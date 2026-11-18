@@ -6,6 +6,7 @@ use gpui::{
 
 use super::games::{rune_page_row, skill_order_row};
 use super::theme::*;
+use super::tips;
 use super::{AppView, Loadable, Slot};
 use crate::data::ddragon::{Lane, StaticData};
 use crate::data::matchup_builds;
@@ -66,7 +67,7 @@ impl AppView {
         let champ = data.champion(a).cloned();
         let s = self.lane_stats(&self.a_stats).cloned();
         let loading = self.a_stats.is_loading();
-        let portrait = images::icon(data.champion_icon(a).as_deref(), 72., cx);
+        let portrait = tips::champ(data, a, 72., false, cx);
         let tier = s.as_ref().and_then(|s| s.champion_tier);
         let stats_row = match &s {
             Some(s) => div()
@@ -150,7 +151,7 @@ impl AppView {
         if show {
             for c in data.search(&query).into_iter().take(8) {
                 let key = c.key;
-                let icon = images::icon(data.champion_icon(key).as_deref(), 24., cx);
+                let icon = tips::champ(data, key, 24., false, cx);
                 rows.push(
                     div()
                         .id(SharedString::from(format!("{id}-{key}")))
@@ -256,8 +257,8 @@ impl AppView {
         };
         let side_a = self.render_side(data, a, true, cx);
         let side_b = self.render_side(data, b, false, cx);
-        let portrait_a = ring(images::round(data.champion_icon(a).as_deref(), 104., cx), RED);
-        let portrait_b = ring(images::round(data.champion_icon(b).as_deref(), 104., cx), BLUE);
+        let portrait_a = ring(tips::champ(data, a, 104., true, cx), RED);
+        let portrait_b = ring(tips::champ(data, b, 104., true, cx), BLUE);
 
         // The head-to-head numbers: deeplol's live matchup stats on the live
         // patch, otherwise the selected patch's matchup list.
@@ -359,7 +360,7 @@ impl AppView {
             .iter()
             .take(5)
             .map(|m| {
-                let icon = images::round(data.champion_icon(m.enemy_champion_id).as_deref(), 30., cx);
+                let icon = tips::champ(data, m.enemy_champion_id, 30., true, cx);
                 let enemy = m.enemy_champion_id;
                 let lane = self.lane;
                 div()
@@ -380,8 +381,8 @@ impl AppView {
             .unwrap_or_default()
             .iter()
             .enumerate()
-            .map(|(i, url)| {
-                let icon = images::icon(Some(url), 30., cx);
+            .map(|(i, skill)| {
+                let icon = tips::skill(skill, 30., cx);
                 div()
                     .relative()
                     .child(icon)
@@ -512,13 +513,13 @@ impl AppView {
             .map(|(i, b)| {
                 let runes = rune_page_row(data, &b.runes, 28., cx);
                 let spells: Vec<AnyElement> =
-                    [b.spells.0, b.spells.1].iter().map(|&s| images::icon(data.spell_icon(s).as_deref(), 28., cx)).collect();
-                let start: Vec<AnyElement> = b.starter.iter().map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx)).collect();
+                    [b.spells.0, b.spells.1].iter().map(|&s| tips::spell(data, s, 28., cx)).collect();
+                let start: Vec<AnyElement> = b.starter.iter().map(|&it| tips::item(data, it, 28., cx)).collect();
                 let items: Vec<AnyElement> = b
                     .items
                     .iter()
                     .chain(b.boots.iter())
-                    .map(|&it| images::icon(Some(&data.item_icon(it)), 28., cx))
+                    .map(|&it| tips::item(data, it, 28., cx))
                     .collect();
                 let skills = skill_order_row(&b.skills, 15);
                 let keystone = data.rune_name(b.keystone);
