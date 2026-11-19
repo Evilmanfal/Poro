@@ -1,44 +1,54 @@
 # Poro
 
-A lightweight Rust + GPUI desktop app for League of Legends:
+A lightweight League of Legends companion for Windows, written in Rust with GPUI. One portable `poro.exe`:
+no installer, no account.
 
-- **Champion Matchup**: deeplol.gg's matchup view (deeplol.gg/llm). It shows the selected champion's tier, rank,
-  win/pick/ban rate and games; head-to-head win rate and sample size; Weak Against; skills; level 1–6
-  advantage and tips; popular builds; and real games of the matchup by pros and high-elo players, each with its full
-  rune page, spells, items, skill order and item timeline.
-- **Counters**: lolalytics.com's counters list (win rate vs, all-champs win rate, Δ1, Δ2, games), sortable.
-  Click a row to open that matchup.
-- **Patches**: the live patch plus the 5 before it. deeplol is usually one patch behind; the app says when it
-  falls back to deeplol's newest patch.
-- **Add runes**: sends a build's rune page (and summoner spells, in champ select) to the League client running on
-  this PC through its local API. Pages made by the app are named `Poro: …`, and each new import reuses that slot.
-  The app follows champ select by itself: it fills in your champion, lane and lane opponent (click the status
-  pill to turn that off).
+## Features
+- **Tier List** (main page): U.GG's live tier list (S+, S, A) with All / Top / Jungle / Mid / ADC / Support
+  filters. Click a champion for its builds: deeplol's popular builds with full rune trees, spells, core item
+  order, build path with prices and skill order.
+- **Champion Matchup**: pick two champions for the head-to-head win rate, level 1–6 advantage and tips,
+  Weak Against (from lolalytics), up to three builds for that exact matchup taken from real games (named AP,
+  AD, Lethality, Bruiser, …), and the matchup's pro and high-elo games with lane and ALL / OTP / PRO filters.
+- **Counters**: lolalytics' counter list for any champion and lane, sortable.
+- **Patches**: the live patch and the five before it.
+- **Add runes**: one click puts a build's rune page (and summoner spells, in champ select) into your League
+  client. During champ select Poro fills in your champion, lane and lane opponent by itself.
+- **In-game overlays** (each optional, in Settings): Quick Stats compared with your lane opponent, the next
+  skills to level, your item build, and the realized gold difference under every player on the Tab
+  scoreboard. They open when a game starts, close when it ends, hide when you alt-tab, and let clicks through.
+  Play in Borderless or Windowed mode.
+- **Hover descriptions** on every champion, ability, item, rune and summoner spell.
+- **Exit into tray** (optional), and **automatic updates** from this repo's releases.
 
-Icons come from Riot's Data Dragon (champions, items, spells, runes, skills) and CommunityDragon (stat shards).
+## Download
+Grab `poro.exe` from the [latest release](https://github.com/Evilmanfal/Poro/releases/latest) and run it.
+It's portable; keep it anywhere. Settings and a data cache live in `%LOCALAPPDATA%\Poro`.
 
 ## Data sources
-deeplol.gg and lolalytics.com have no public API. The app calls the same JSON endpoints their own pages use
-(`b2c-api-cdn.deeplol.gg`, `a1.lolalytics.com/mega`). These are unofficial and can change without notice.
-Every response is cached in `%LOCALAPPDATA%\Poro\cache`. Live data refreshes every 30 minutes; if a site is
-unreachable, the app shows the last good copy.
+- **U.GG** (tier list), **deeplol.gg** (champion stats, builds, matchups, games) and **lolalytics.com**
+  (counters) have no public API. Poro reads the same JSON their own websites load. These endpoints are
+  unofficial and can change without notice. Responses are cached, so if a site is down Poro shows the last
+  good copy.
+- **Riot's Data Dragon** (champions, items, runes, spells, icons) and **CommunityDragon** (stat shard icons).
+- In game, only the game's own **Live Client Data API** (`127.0.0.1:2999`). Poro never reads game memory.
+  Rune and spell import uses the League client's local API.
 
-## Icon
-`assets/poro.ico` (embedded in the exe) and `assets/poro.png` (the in-app logo) are made by
-`./assets/make_icon.ps1 <transparent png>`.
+Poro isn't affiliated with U.GG, deeplol.gg or lolalytics.com.
+
+## Updates
+At start and every 12 hours Poro checks this repo's latest release. If it's newer, Poro offers to update,
+downloads `poro.exe`, checks its signature and restarts on the new version. Each release ships `poro.exe`
+plus `poro.exe.sig`, an Ed25519 signature made with a private key that exists only on the developer's PC. The
+matching public key is built into the app (`src/update.rs`), so a download that doesn't verify is deleted and
+never run.
 
 ## Build
 ```powershell
 ./build.ps1 build -Release   # target/release/poro.exe
 ```
-GPUI 0.2.2 is vendored with Neo's idle-CPU patch (`vendor/gpui/NEO-PATCH.md`).
-
-## Updates
-Poro updates itself from this repo's GitHub releases. At start and every 12 hours it checks the latest
-release. If that release is newer, Poro offers to update, downloads `poro.exe`, checks its signature and
-restarts on the new version. Each release ships `poro.exe` plus `poro.exe.sig`, an Ed25519 signature made
-with a private key that exists only on the developer's PC. The matching public key is built into the app
-(`src/update.rs`), so a download that doesn't verify is deleted and never run.
+Needs Rust (stable) and the Visual Studio C++ build tools. GPUI 0.2.2 is vendored with a few small patches
+(`vendor/gpui/NEO-PATCH.md`): idle CPU, and tooltips that show and hide instantly.
 
 ## Releasing
 1. Bump `version` in `Cargo.toml` and commit.
@@ -47,5 +57,11 @@ with a private key that exists only on the developer's PC. The matching public k
 3. Publish a GitHub release tagged `v<version>` with both files attached under exactly those names, e.g.
    `gh release create v0.1.1 dist/poro.exe dist/poro.exe.sig --title "Poro v0.1.1" --notes "..."`.
 
-Keep a backup of the release key. Without it, installed copies can't be updated (they would need a manual
-download of a build with a new key).
+Keep a backup of the release key. Without it, installed copies can't be updated.
+
+## License
+MIT (see `LICENSE`). The vendored GPUI is Apache-2.0 (Zed Industries).
+
+Poro isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone
+officially involved in producing or managing Riot Games properties. Riot Games, and all associated properties
+are trademarks or registered trademarks of Riot Games, Inc.
