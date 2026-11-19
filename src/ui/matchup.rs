@@ -128,8 +128,74 @@ impl AppView {
                                     ))),
                             )
                             .child(stats_row),
-                    ),
+                    )
+                    .child(div().flex_1())
+                    .child(self.ban_suggestions(data, a, cx)),
             )
+            .into_any_element()
+    }
+
+    /// The selected champion's five worst matchups in this lane (lolalytics,
+    /// like the Counters tab), shown before an opponent is picked so you know
+    /// whom to ban. Clicking one makes it the opponent.
+    fn ban_suggestions(&mut self, data: &StaticData, champ: u32, cx: &mut Context<Self>) -> AnyElement {
+        let lane = self.lane;
+        let counters = self.counters_for(champ, lane, cx);
+        let name = data.champion_name(champ);
+        let body: AnyElement = match &counters {
+            Loadable::Ready(list) if !list.is_empty() => {
+                let cells: Vec<AnyElement> = list
+                    .iter()
+                    .take(5)
+                    .map(|m| {
+                        let enemy = m.cid;
+                        let tip = crate::data::ddragon::Tip {
+                            title: data.champion_name(enemy),
+                            subtitle: Some(format!("{name} wins {:.2}% of {} games vs them", m.vs_wr, thousands(m.n))),
+                            body: format!("Δ1 {:+.2} · Δ2 {:+.2} · click to see this matchup", m.d1, m.d2),
+                        };
+                        let icon = tips::tipped(images::round(data.champion_icon(enemy).as_deref(), 38., cx), Some(tip));
+                        div()
+                            .id(SharedString::from(format!("ban-{enemy}")))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(3.))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_champion(Slot::B, enemy, cx);
+                                this.lane = lane;
+                                this.lane_auto = false;
+                            }))
+                            .child(div().rounded_full().border_2().border_color(rgb(RED)).child(icon))
+                            .child(div().text_size(px(11.)).font_weight(FontWeight::BOLD).text_color(rgb(wr_color(m.vs_wr))).child(format!("{:.1}%", m.vs_wr)))
+                            .into_any_element()
+                    })
+                    .collect();
+                div().flex().gap(px(10.)).children(cells).into_any_element()
+            }
+            Loadable::Loading | Loadable::Idle => {
+                div().text_size(px(12.)).text_color(rgb(MUTED)).child("Loading…").into_any_element()
+            }
+            _ => div()
+                .text_size(px(12.))
+                .text_color(rgb(MUTED))
+                .child(format!("No counter data for {name} {}", lane.label()))
+                .into_any_element(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .flex()
+                    .items_baseline()
+                    .gap(px(8.))
+                    .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child("Weak Against"))
+                    .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(format!("ban candidates · {}", lane.label()))),
+            )
+            .child(body)
             .into_any_element()
     }
 
