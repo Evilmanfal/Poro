@@ -243,6 +243,11 @@ impl StaticData {
         self.versions.first().map(String::as_str).unwrap_or("16.23.1")
     }
 
+    /// By Data Dragon id ("MonkeyKing"), ignoring case.
+    pub fn champion_by_id(&self, id: &str) -> Option<&Champion> {
+        self.champions.iter().find(|c| c.id.eq_ignore_ascii_case(id))
+    }
+
     pub fn champion(&self, key: u32) -> Option<&Champion> {
         self.by_key.get(&key).map(|&i| &self.champions[i])
     }

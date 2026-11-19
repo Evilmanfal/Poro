@@ -5,6 +5,8 @@ mod counters;
 mod games;
 mod matchup;
 mod theme;
+mod overlay;
+mod settings_page;
 mod tips;
 mod update;
 
@@ -51,6 +53,7 @@ impl<T> Loadable<T> {
 pub enum Tab {
     Matchup,
     Counters,
+    Settings,
 }
 
 #[derive(Clone, PartialEq)]
@@ -127,6 +130,8 @@ pub struct AppView {
     pub toast: Option<(String, bool)>,
     toast_gen: u64,
     up: update::UpdateState,
+    pub settings: crate::settings::Settings,
+    ov: overlay::OverlayState,
 }
 
 /// Runs `job` on a background thread, then `done` on the UI thread.
@@ -202,8 +207,16 @@ impl AppView {
             toast: None,
             toast_gen: 0,
             up: update::UpdateState::default(),
+            settings: crate::settings::load(),
+            ov: overlay::OverlayState::default(),
         };
         view.start_update_checks(cx);
+        view.start_overlay_loop(cx);
+        // The overlay is a window too, so closing the main window quits Poro.
+        window.on_window_should_close(cx, |_, cx| {
+            cx.quit();
+            true
+        });
         view.load_static(cx);
         view.poll_client(cx);
         view
@@ -794,6 +807,7 @@ impl AppView {
             .child(div().text_size(px(11.)).text_color(rgb(MUTED)).mr(px(10.)).child(format!("v{}", crate::update::current())))
             .child(tab("Champion Matchup", Tab::Matchup, self, cx))
             .child(tab("Counters", Tab::Counters, self, cx))
+            .child(tab("Settings", Tab::Settings, self, cx))
             .child(div().flex_1())
             .child(patch_picker)
             .child(div().w(px(10.)))
@@ -870,6 +884,7 @@ impl Render for AppView {
             match self.tab {
                 Tab::Matchup => self.render_matchup(window, cx),
                 Tab::Counters => self.render_counters(window, cx),
+                Tab::Settings => self.render_settings(cx),
             }
         };
         let toast = self.toast.clone().map(|(msg, ok)| {
@@ -903,7 +918,11 @@ impl Render for AppView {
             // One scroll position per tab.
             .child(
                 div()
-                    .id(if self.tab == Tab::Matchup { "body-matchup" } else { "body-counters" })
+                    .id(match self.tab {
+                        Tab::Matchup => "body-matchup",
+                        Tab::Counters => "body-counters",
+                        Tab::Settings => "body-settings",
+                    })
                     .flex_1()
                     .overflow_y_scroll()
                     .child(body),

@@ -3855,11 +3855,13 @@ dependencies = [
  "anyhow",
  "blake3",
  "gpui",
+ "raw-window-handle",
  "reqwest",
  "ring",
  "serde",
  "serde_json",
  "unicode-segmentation",
+ "windows-sys 0.59.0",
  "winresource",
 ]
 

@@ -6,9 +6,12 @@
 mod data;
 mod images;
 mod lcu;
+mod live;
+mod settings;
 mod text_input;
 mod ui;
 mod update;
+mod win;
 
 use gpui::{px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
