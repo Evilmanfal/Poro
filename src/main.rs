@@ -10,6 +10,7 @@ mod lcu;
 mod live;
 mod settings;
 mod text_input;
+mod tray;
 mod ui;
 mod update;
 mod win;

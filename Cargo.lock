@@ -3853,6 +3853,7 @@ name = "poro"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.5.0",
  "blake3",
  "gpui",
  "raw-window-handle",

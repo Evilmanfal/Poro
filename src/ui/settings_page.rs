@@ -71,6 +71,35 @@ impl AppView {
             })
             .collect();
         let previewing = self.ov.previewing();
+        let tray_on = self.settings.exit_to_tray;
+        let tray_row = div()
+            .id("setting-tray")
+            .flex()
+            .items_center()
+            .gap(px(16.))
+            .p(px(14.))
+            .rounded(px(8.))
+            .bg(rgb(PANEL_2))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.settings.exit_to_tray = !this.settings.exit_to_tray;
+                crate::settings::save(&this.settings);
+                this.sync_tray(cx);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("Exit into tray"))
+                    .child(div().text_size(px(13.)).text_color(rgb(0xb4b6c0)).child(
+                        "Closing Poro keeps it running in the system tray, so in-game overlays and champ select \
+                         still work. Click the tray icon to open it again, or right-click it › Quit Poro to exit.",
+                    )),
+            )
+            .child(switch(tray_on));
         div()
             .flex()
             .flex_col()
@@ -88,6 +117,7 @@ impl AppView {
                          draw over Fullscreen. Overlays let your clicks through to the game.",
                     )),
             )
+            .child(card().flex().flex_col().gap(px(10.)).child(section_title("General")).child(tray_row))
             .child(
                 card()
                     .flex()

@@ -133,6 +133,10 @@ pub struct AppView {
     toast_gen: u64,
     up: update::UpdateState,
     tiers: tierlist::TierState,
+    /// The tray icon, while "Exit into tray" is on.
+    tray: Option<crate::tray::Tray>,
+    main_hwnd: Option<isize>,
+    tray_hint_shown: bool,
     pub settings: crate::settings::Settings,
     ov: overlay::OverlayState,
 }
@@ -211,17 +215,20 @@ impl AppView {
             toast_gen: 0,
             up: update::UpdateState::default(),
             tiers: tierlist::TierState::default(),
+            tray: None,
+            main_hwnd: crate::tray::hwnd_of(window),
+            tray_hint_shown: false,
             settings: crate::settings::load(),
             ov: overlay::OverlayState::default(),
         };
         view.start_update_checks(cx);
         view.start_overlay_loop(cx);
         view.start_tab_watch(cx);
-        // The overlay is a window too, so closing the main window quits Poro.
-        window.on_window_should_close(cx, |_, cx| {
-            cx.quit();
-            true
-        });
+        view.sync_tray(cx);
+        // Closing hides to the tray when "Exit into tray" is on; otherwise it
+        // quits (the overlay is a window too, so quit explicitly).
+        let entity = cx.entity();
+        window.on_window_should_close(cx, move |_, cx| entity.update(cx, |this, cx| this.on_close_requested(cx)));
         view.load_static(cx);
         view.poll_client(cx);
         view
@@ -624,6 +631,70 @@ impl AppView {
         }
         self.client = status;
         cx.notify();
+    }
+
+    /// Adds or removes the tray icon to match the "Exit into tray" setting.
+    pub fn sync_tray(&mut self, cx: &mut Context<Self>) {
+        if !self.settings.exit_to_tray {
+            self.tray = None;
+            return;
+        }
+        if self.tray.is_some() {
+            return;
+        }
+        let Some((tray, events)) = crate::tray::Tray::new() else { return };
+        self.tray = Some(tray);
+        cx.spawn(async move |this, cx| {
+            while let Ok(ev) = events.recv().await {
+                if this.update(cx, |this, cx| this.on_tray(ev, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn on_tray(&mut self, ev: crate::tray::TrayEvent, cx: &mut Context<Self>) {
+        use crate::tray::TrayEvent;
+        match ev {
+            TrayEvent::Open => {
+                if let Some(h) = self.main_hwnd {
+                    crate::tray::show_window(h);
+                }
+                cx.notify();
+            }
+            TrayEvent::Quit => {
+                self.tray = None; // removes the icon right away
+                cx.quit();
+            }
+            TrayEvent::Readd => {
+                if let Some(tray) = &self.tray {
+                    tray.add();
+                }
+            }
+        }
+    }
+
+    /// Closing the window: hide to the tray if that's on, otherwise quit.
+    fn on_close_requested(&mut self, cx: &mut Context<Self>) -> bool {
+        match (&self.tray, self.main_hwnd) {
+            (Some(tray), Some(h)) if self.settings.exit_to_tray => {
+                crate::tray::hide_window(h);
+                if !self.tray_hint_shown {
+                    self.tray_hint_shown = true;
+                    tray.notify(
+                        "Poro is still running",
+                        "Your in-game overlays keep working. Click the tray icon to open Poro, or right-click it to quit.",
+                    );
+                }
+                false
+            }
+            _ => {
+                self.tray = None;
+                cx.quit();
+                true
+            }
+        }
     }
 
     /// Puts `page` (and optionally summoner spells) into the League client.

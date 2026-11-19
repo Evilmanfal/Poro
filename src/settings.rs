@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Settings {
     pub overlays: Overlays,
+    /// Closing the window keeps Poro running in the system tray.
+    pub exit_to_tray: bool,
 }
 
 /// In-game overlays. All off until the player turns them on.
