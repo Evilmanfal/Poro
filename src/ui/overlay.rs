@@ -322,7 +322,19 @@ impl Render for OverlayView {
             root = root.child(div().absolute().top(px(h * 0.16)).left(px(w - 236.0)).w(px(220.0)).child(quick_stats(&snap)));
         }
         if snap.on.lane_gold && snap.tab {
-            root = root.child(div().absolute().top(px(h * 0.055)).left(px(w / 2. - 210.)).w(px(420.)).child(lane_gold(&snap)));
+            // A small number under each player's K/D/A on the scoreboard.
+            for (x, y, diff) in lane_gold(&snap, &hud) {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .left(px(x / sf - 40.0 * s))
+                        .top(px(y / sf))
+                        .w(px(80.0 * s))
+                        .flex()
+                        .justify_center()
+                        .child(outlined(signed_gold(diff), 11.0 * s, gold_color(diff))),
+                );
+            }
         }
         self.snap = Some(snap);
         root
@@ -482,8 +494,9 @@ fn jungle_timers(s: &Snapshot, hud: &Hud) -> Vec<(String, (f32, f32))> {
     out
 }
 
-/// Gold in each player's items ("realized gold"), lane by lane.
-fn lane_gold(s: &Snapshot) -> AnyElement {
+/// Gold in each player's items ("realized gold"): for every player, the
+/// difference to their lane opponent, at their row on the scoreboard.
+fn lane_gold(s: &Snapshot, hud: &Hud) -> Vec<(f32, f32, i64)> {
     let gold = |p: Option<&Player>| -> i64 {
         p.map(|p| {
             p.items
@@ -493,34 +506,22 @@ fn lane_gold(s: &Snapshot) -> AnyElement {
         })
         .unwrap_or(0)
     };
-    let lanes = s.game.lanes();
-    let mut team = 0i64;
-    let cells: Vec<AnyElement> = lanes
-        .iter()
-        .map(|(label, a, e)| {
-            let diff = gold(*a) - gold(*e);
-            team += diff;
-            div()
-                .flex()
-                .flex_col()
-                .items_center()
-                .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child(label.to_string()))
-                .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).text_color(rgb(gold_color(diff))).child(signed_gold(diff)))
-                .into_any_element()
-        })
-        .collect();
-    panel("Lane Gold Difference")
-        .child(div().flex().justify_between().children(cells))
-        .child(
-            div()
-                .flex()
-                .justify_center()
-                .gap(px(6.))
-                .text_size(px(12.))
-                .child(div().text_color(rgb(MUTED)).child("Team"))
-                .child(div().font_weight(FontWeight::BOLD).text_color(rgb(gold_color(team))).child(signed_gold(team))),
-        )
-        .into_any_element()
+    let Some(me) = s.game.me() else { return Vec::new() };
+    // Blue (ORDER) is on the left unless the scoreboard is mirrored.
+    let allies_left = (me.team == "ORDER") != hud.mirrored_scoreboard;
+    let mut out = Vec::new();
+    for (row, (_, ally, enemy)) in s.game.lanes().into_iter().enumerate() {
+        let diff = gold(ally) - gold(enemy);
+        if ally.is_some() {
+            let (x, y) = hud.scoreboard_kda(allies_left, row);
+            out.push((x, y, diff));
+        }
+        if enemy.is_some() {
+            let (x, y) = hud.scoreboard_kda(!allies_left, row);
+            out.push((x, y, -diff));
+        }
+    }
+    out
 }
 
 fn gold_color(diff: i64) -> u32 {

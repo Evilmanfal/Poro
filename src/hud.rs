@@ -18,6 +18,8 @@ pub struct Hud {
     pub minimap_scale: f32,
     /// Minimap on the left.
     pub flip_minimap: bool,
+    /// The scoreboard's teams are swapped (League › Interface).
+    pub mirrored_scoreboard: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,7 +38,14 @@ const REF_MINIMAP: f32 = 0.94;
 impl Hud {
     /// Reads game.cfg; `size` is the game window's size in pixels.
     pub fn read(size: (f32, f32)) -> Hud {
-        let mut hud = Hud { width: size.0, height: size.1, global_scale: REF_HUD, minimap_scale: REF_MINIMAP, flip_minimap: false };
+        let mut hud = Hud {
+            width: size.0,
+            height: size.1,
+            global_scale: REF_HUD,
+            minimap_scale: REF_MINIMAP,
+            flip_minimap: false,
+            mirrored_scoreboard: false,
+        };
         if let Some(text) = config_path().and_then(|p| std::fs::read_to_string(p).ok()) {
             let mut section = String::new();
             for line in text.lines().map(str::trim) {
@@ -52,6 +61,7 @@ impl Hud {
                     "GlobalScale" => hud.global_scale = v.parse().unwrap_or(REF_HUD),
                     "MinimapScale" => hud.minimap_scale = v.parse().unwrap_or(REF_MINIMAP),
                     "FlipMiniMap" => hud.flip_minimap = v == "1",
+                    "MirroredScoreboard" => hud.mirrored_scoreboard = v == "1",
                     _ => {}
                 }
             }
@@ -95,6 +105,35 @@ impl Hud {
         (self.width / 2.0 - 445.0 * s, self.height - 8.0 * s)
     }
 }
+
+impl Hud {
+    /// Where to put a number just under a player's K/D/A on the Tab
+    /// scoreboard: the centre of the spot, for the team shown on the `left`
+    /// half, `row` 0–4 (top, jungle, mid, bot, support).
+    pub fn scoreboard_kda(&self, left: bool, row: usize) -> (f32, f32) {
+        let s = self.s();
+        let g = SCOREBOARD;
+        let x = self.width / 2.0 + if left { -g.kda_x } else { g.kda_x } * s;
+        let y = self.height / 2.0 + (g.first_row_y + row as f32 * g.row_h + g.below_kda) * s;
+        (x, y)
+    }
+}
+
+/// The Tab scoreboard's geometry at the reference size, relative to the
+/// screen centre (in pixels at 1920×1080, HUD scale 0.21).
+#[derive(Clone, Copy)]
+pub struct ScoreboardGeometry {
+    /// Horizontal distance from the centre to each team's K/D/A column.
+    pub kda_x: f32,
+    /// The first row's K/D/A line, relative to the screen's vertical centre.
+    pub first_row_y: f32,
+    /// Distance between rows.
+    pub row_h: f32,
+    /// How far under the K/D/A text the number goes.
+    pub below_kda: f32,
+}
+
+pub const SCOREBOARD: ScoreboardGeometry = ScoreboardGeometry { kda_x: 300.0, first_row_y: -175.0, row_h: 52.0, below_kda: 16.0 };
 
 /// League's game.cfg.
 fn config_path() -> Option<PathBuf> {
