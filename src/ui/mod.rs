@@ -244,6 +244,10 @@ impl AppView {
                         .collect();
                     this.data = Some(Arc::new(data));
                     this.dl_versions = dl;
+                    // Testing aid: `poro.exe --preview-overlays` starts the overlay preview.
+                    if std::env::args().any(|a| a == "--preview-overlays") {
+                        this.preview_overlays(cx);
+                    }
                     // Start on a matchup so the window isn't empty.
                     if this.a.is_none() {
                         this.set_champion(Slot::A, 61, cx);

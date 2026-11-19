@@ -308,19 +308,26 @@ impl Render for OverlayView {
             root = root.child(div().absolute().top(px(h * 0.16)).left(px(w - 236.0)).w(px(220.0)).child(quick_stats(&snap)));
         }
         if snap.on.lane_gold && snap.tab {
-            // A small number under each player's K/D/A on the scoreboard.
-            for (x, y, diff) in lane_gold(&snap, &hud) {
+            // Under each player's K/D/A: coin, difference, arrow (like U.GG).
+            let gold = lane_gold(&snap, &hud);
+            for &(x, y, diff) in &gold.players {
                 root = root.child(
                     div()
                         .absolute()
-                        .left(px(x / sf - 40.0 * s))
+                        .left(px(x / sf - 60.0 * s))
                         .top(px(y / sf))
-                        .w(px(80.0 * s))
+                        .w(px(120.0 * s))
                         .flex()
                         .justify_center()
-                        .child(outlined(signed_gold(diff), 11.0 * s, gold_color(diff))),
+                        .child(gold_tag(diff, s)),
                 );
             }
+            // The team totals bar under the scoreboard.
+            let (bx, by) = hud.scoreboard_bar();
+            let bw = 290.0 * s;
+            root = root.child(
+                div().absolute().left(px(bx / sf - bw / 2.0)).top(px(by / sf)).w(px(bw)).child(team_gold_bar(&gold, s)),
+            );
         }
         self.snap = Some(snap);
         root
@@ -457,9 +464,20 @@ fn item_build(s: &Snapshot, k: f32, cx: &mut App) -> AnyElement {
         .into_any_element()
 }
 
+/// Realized gold (the value of a player's items) for the scoreboard.
+struct GoldView {
+    /// (x, y, difference to the lane opponent) per player, at their K/D/A.
+    players: Vec<(f32, f32, i64)>,
+    /// Item gold of the team on the left and right halves of the scoreboard.
+    left_total: i64,
+    right_total: i64,
+    /// My team is the left half.
+    allies_left: bool,
+}
+
 /// Gold in each player's items ("realized gold"): for every player, the
 /// difference to their lane opponent, at their row on the scoreboard.
-fn lane_gold(s: &Snapshot, hud: &Hud) -> Vec<(f32, f32, i64)> {
+fn lane_gold(s: &Snapshot, hud: &Hud) -> GoldView {
     let gold = |p: Option<&Player>| -> i64 {
         p.map(|p| {
             p.items
@@ -469,37 +487,102 @@ fn lane_gold(s: &Snapshot, hud: &Hud) -> Vec<(f32, f32, i64)> {
         })
         .unwrap_or(0)
     };
-    let Some(me) = s.game.me() else { return Vec::new() };
+    let mut view = GoldView { players: Vec::new(), left_total: 0, right_total: 0, allies_left: true };
+    let Some(me) = s.game.me() else { return view };
     // Blue (ORDER) is on the left unless the scoreboard is mirrored.
     let allies_left = (me.team == "ORDER") != hud.mirrored_scoreboard;
-    let mut out = Vec::new();
+    view.allies_left = allies_left;
+    let (mut ally_total, mut enemy_total) = (0, 0);
     for (row, (_, ally, enemy)) in s.game.lanes().into_iter().enumerate() {
-        let diff = gold(ally) - gold(enemy);
+        let (ga, ge) = (gold(ally), gold(enemy));
+        ally_total += ga;
+        enemy_total += ge;
         if ally.is_some() {
             let (x, y) = hud.scoreboard_kda(allies_left, row);
-            out.push((x, y, diff));
+            view.players.push((x, y, ga - ge));
         }
         if enemy.is_some() {
             let (x, y) = hud.scoreboard_kda(!allies_left, row);
-            out.push((x, y, -diff));
+            view.players.push((x, y, ge - ga));
         }
     }
-    out
+    (view.left_total, view.right_total) = if allies_left { (ally_total, enemy_total) } else { (enemy_total, ally_total) };
+    view
 }
 
-fn gold_color(diff: i64) -> u32 {
-    if diff > 300 {
-        ACCENT
-    } else if diff < -300 {
-        RED
-    } else {
-        TEXT
-    }
+const BLUE_TEAM: u32 = 0x3b82f6;
+const RED_TEAM: u32 = 0xe5484d;
+
+/// A small gold coin.
+fn coin(k: f32) -> AnyElement {
+    div()
+        .w(px(12.0 * k))
+        .h(px(9.0 * k))
+        .rounded_full()
+        .bg(rgb(0xf3c873))
+        .border_1()
+        .border_color(rgb(0xb8862f))
+        .into_any_element()
 }
 
-fn signed_gold(v: i64) -> String {
-    let sign = if v > 0 { "+" } else if v < 0 { "−" } else { "" };
-    format!("{sign}{}", thousands(v.unsigned_abs()))
+/// Coin, difference and an up/down arrow, e.g. "+1150 ▲".
+fn gold_tag(diff: i64, k: f32) -> AnyElement {
+    let text = if diff > 0 { format!("+{diff}") } else { format!("{diff}") };
+    let arrow = match diff.signum() {
+        1 => Some(("▲", BLUE_TEAM)),
+        -1 => Some(("▼", RED_TEAM)),
+        _ => None,
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(4.0 * k))
+        .child(coin(k))
+        .child(outlined(text, 11.0 * k, 0xffffff))
+        .children(arrow.map(|(a, c)| outlined(a.to_string(), 8.0 * k, c)))
+        .into_any_element()
+}
+
+/// Team totals under the scoreboard: left total, the lead in the middle
+/// (coloured for the team ahead, pointing at it), right total.
+fn team_gold_bar(g: &GoldView, k: f32) -> AnyElement {
+    let (left_color, right_color) = if g.allies_left { (BLUE_TEAM, RED_TEAM) } else { (RED_TEAM, BLUE_TEAM) };
+    let lead = g.left_total - g.right_total;
+    let total = |amount: i64, color: u32| {
+        div()
+            .flex_1()
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap(px(5.0 * k))
+            .bg(rgba(0x10141ccc))
+            .border_b_2()
+            .border_color(rgb(color))
+            .child(coin(k))
+            .child(outlined(amount.to_string(), 11.0 * k, 0xffffff))
+    };
+    let (badge_color, label) = match lead.signum() {
+        1 => (left_color, format!("◀ {}", lead)),
+        -1 => (right_color, format!("{} ▶", -lead)),
+        _ => (0x3a3f4b, "Even".to_string()),
+    };
+    div()
+        .flex()
+        .h(px(20.0 * k))
+        .child(total(g.left_total, left_color))
+        .child(
+            div()
+                .flex_1()
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgb(badge_color))
+                .child(outlined(label, 11.0 * k, 0xffffff)),
+        )
+        .child(total(g.right_total, right_color))
+        .into_any_element()
 }
 
 /// Sample data for the Settings preview.

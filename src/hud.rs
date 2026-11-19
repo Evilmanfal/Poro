@@ -105,6 +105,14 @@ impl Hud {
     }
 }
 
+impl Hud {
+    /// The team gold bar's top-centre point, just under the scoreboard's
+    /// frame (its bottom edge is at y 698 on a 1920×1080 screen).
+    pub fn scoreboard_bar(&self) -> (f32, f32) {
+        (self.width / 2.0, self.height / 2.0 + 162.0 * self.s())
+    }
+}
+
 /// The Tab scoreboard's geometry at the reference size, relative to the
 /// screen centre (in pixels at 1920×1080, HUD scale 0.21).
 #[derive(Clone, Copy)]
