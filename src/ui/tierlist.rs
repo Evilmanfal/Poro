@@ -2,7 +2,7 @@
 //! filters, and a champion page with U.GG's builds when a champion is
 //! clicked.
 
-use gpui::{div, prelude::*, px, AnyElement, Context, FontWeight, SharedString};
+use gpui::{div, prelude::*, px, AnyElement, Context, Focusable, FontWeight, SharedString, Window};
 
 use super::theme::*;
 use super::tips;
@@ -122,7 +122,101 @@ impl AppView {
         cx.notify();
     }
 
-    pub(super) fn render_tier_list(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// Every role U.GG has data for, for champions matching the search, most
+    /// played first (any tier and pick rate). Champions without ranked data
+    /// get one row with no stats.
+    fn search_results(&self, data: &StaticData, query: &str) -> Vec<(u32, Option<TierEntry>)> {
+        let list = self.tiers.list.as_ref().and_then(|l| l.ready());
+        let mut out = Vec::new();
+        for c in data.search(query).into_iter().take(12) {
+            let mut roles: Vec<TierEntry> =
+                list.map(|l| l.entries.iter().filter(|e| e.champion == c.key).cloned().collect()).unwrap_or_default();
+            roles.sort_by(|a, b| b.pick_rate.total_cmp(&a.pick_rate));
+            if roles.is_empty() {
+                out.push((c.key, None));
+            }
+            out.extend(roles.into_iter().map(|e| (c.key, Some(e))));
+        }
+        out
+    }
+
+    pub(super) fn open_first_search_result(&mut self, cx: &mut Context<Self>) {
+        let Some(data) = self.data.clone() else { return };
+        let query = self.input_t.read(cx).text().to_string();
+        if let Some((champ, e)) = self.search_results(&data, &query).into_iter().next() {
+            let lane = e.map(|e| e.lane).unwrap_or(Lane::Middle);
+            self.open_champion_page(champ, lane, cx);
+        }
+    }
+
+    fn search_row(&self, data: &StaticData, champ: u32, e: Option<&TierEntry>, cx: &mut Context<Self>) -> AnyElement {
+        let portrait = images::round(data.champion_icon(champ).as_deref(), 38., cx);
+        let lane = e.map(|e| e.lane);
+        let stat = |label: &'static str, value: String, color: u32| {
+            div()
+                .w(px(92.))
+                .flex()
+                .flex_col()
+                .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).text_color(rgb(color)).child(value))
+                .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(label))
+        };
+        let row = div()
+            .id(SharedString::from(format!("tl-search-{champ}-{}", lane.map(|l| l.short()).unwrap_or("none"))))
+            .flex()
+            .items_center()
+            .gap(px(14.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(8.))
+            .bg(rgb(PANEL_2))
+            .child(portrait)
+            .child(
+                div()
+                    .w(px(170.))
+                    .flex()
+                    .flex_col()
+                    .child(div().text_size(px(14.)).font_weight(FontWeight::BOLD).child(data.champion_name(champ)))
+                    .child(div().flex().items_center().gap(px(5.)).text_size(px(12.)).text_color(rgb(MUTED)).children(
+                        lane.map(|l| images::icon(Some(&l.icon()), 14., cx)),
+                    ).child(match lane {
+                        Some(l) => l.label().to_string(),
+                        None => "No ranked data this patch".to_string(),
+                    })),
+            );
+        let Some(e) = e else { return row.into_any_element() };
+        let tier = e.tier();
+        let low = e.pick_rate < ugg::MIN_PICK_RATE;
+        let (champ, lane) = (e.champion, e.lane);
+        row.cursor_pointer()
+            .hover(|s| s.bg(rgb(BORDER)))
+            .on_click(cx.listener(move |this, _, _, cx| this.open_champion_page(champ, lane, cx)))
+            .child(
+                div()
+                    .w(px(44.))
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(rgb(tier_color(tier)))
+                            .text_color(rgb(tier_color(tier)))
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::BOLD)
+                            .child(tier.to_string()),
+                    ),
+            )
+            .child(stat("Win rate", format!("{:.1}%", e.win_rate), wr_tier_color(e.win_rate)))
+            .child(stat("Pick rate", format!("{:.1}%", e.pick_rate), TEXT))
+            .child(stat("Ban rate", format!("{:.1}%", e.ban_rate), TEXT))
+            .child(stat("Games", short_games(e.games), TEXT))
+            .when(low, |d| d.child(div().text_size(px(11.)).text_color(rgb(MUTED)).child("Rarely played in this role")))
+            .into_any_element()
+    }
+
+    pub(super) fn render_tier_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.ensure_tier_list(cx);
         let data = self.data.clone().unwrap();
         if self.tiers.page.is_some() {
@@ -175,7 +269,30 @@ impl AppView {
             );
         }
 
-        let body = match &self.tiers.list {
+        let query = self.input_t.read(cx).text().to_string();
+        let focused = self.input_t.focus_handle(cx).is_focused(window);
+        let search = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .w(px(240.))
+            .px(px(10.))
+            .h(px(32.))
+            .rounded(px(6.))
+            .bg(rgb(0x1b1e25))
+            .border_1()
+            .border_color(rgb(if focused { ACCENT } else { BORDER }))
+            .child(div().flex_1().child(self.input_t.clone()));
+        let searching = !query.trim().is_empty();
+        let body = if searching {
+            let results = self.search_results(&data, &query);
+            let rows: Vec<AnyElement> = results.iter().map(|(c, e)| self.search_row(&data, *c, e.as_ref(), cx)).collect();
+            if rows.is_empty() {
+                div().p(px(20.)).text_color(rgb(MUTED)).child(format!("No champion matches \"{query}\".")).into_any_element()
+            } else {
+                div().flex().flex_col().gap(px(6.)).children(rows).into_any_element()
+            }
+        } else { match &self.tiers.list {
             None | Some(Loadable::Idle) | Some(Loadable::Loading) => {
                 div().p(px(20.)).text_color(rgb(MUTED)).child("Loading U.GG's tier list…").into_any_element()
             }
@@ -222,7 +339,7 @@ impl AppView {
                     .collect();
                 div().flex().items_start().gap(px(12.)).children(columns).into_any_element()
             }
-        };
+        } };
         let patch = self.tiers.list.as_ref().and_then(|l| l.ready()).map(|l| l.patch.clone()).unwrap_or_default();
         div()
             .flex()
@@ -236,11 +353,21 @@ impl AppView {
                     .gap(px(10.))
                     .child(div().w(px(3.)).h(px(18.)).bg(rgb(ACCENT)))
                     .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Tier List"))
-                    .child(div().text_size(px(14.)).text_color(rgb(MUTED)).child(format!(
-                        "The best champions for {role_name} in patch {patch}"
-                    ))),
+                    .child(div().text_size(px(14.)).text_color(rgb(MUTED)).child(if searching {
+                        format!("Search results, patch {patch}")
+                    } else {
+                        format!("The best champions for {role_name} in patch {patch}")
+                    })),
             )
-            .child(div().flex().flex_wrap().gap(px(8.)).children(chips))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().flex().flex_wrap().gap(px(8.)).children(chips))
+                    .child(div().flex_1())
+                    .child(search),
+            )
             .child(body)
             .into_any_element()
     }
@@ -560,11 +687,23 @@ impl AppView {
             [a, c, ..] => Some((*a, *c)),
             _ => None,
         };
-        let label = format!("{name} {style}");
-        let apply = page.map(|page| {
-            primary_button("tl-apply", "Add runes")
-                .on_click(cx.listener(move |this, _, _, cx| this.apply(label.clone(), page.clone(), spell_pair, cx)))
-        });
+        let option_items = |slot: usize| b.item_options[slot].iter().take(4).map(|o| o.item).collect::<Vec<u32>>();
+        let import = super::BuildImport {
+            name: format!("{name} {style}"),
+            champion: self.tiers.page.map(|(c, _)| c).unwrap_or(0),
+            page,
+            spells: spell_pair,
+            blocks: vec![
+                ("Starting items".into(), b.starter.clone()),
+                ("Core items".into(), b.core.clone()),
+                ("4th item options".into(), option_items(0)),
+                ("5th item options".into(), option_items(1)),
+                ("6th item options".into(), option_items(2)),
+            ],
+        };
+        let apply = Some(
+            primary_button("tl-apply", "Add Build").on_click(cx.listener(move |this, _, _, cx| this.apply_build(import.clone(), cx))),
+        );
         let tag = |t: &str| {
             div()
                 .px(px(10.))

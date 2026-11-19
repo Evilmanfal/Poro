@@ -619,9 +619,15 @@ impl AppView {
                         pct(b.wins as f64 * 100.0 / b.games.max(1) as f64)
                     ),
                 };
-                let label = format!("{name} {} {keystone}", b.style);
-                let page = b.runes.clone();
-                let spell_pair = Some(b.spells);
+                let mut core = b.items.clone();
+                core.extend(b.boots);
+                let import = super::BuildImport {
+                    name: format!("{name} {} {keystone}", b.style),
+                    champion: self.a.unwrap_or(0),
+                    page: Some(b.runes.clone()),
+                    spells: Some(b.spells),
+                    blocks: vec![("Starting items".into(), b.starter.clone()), ("Core items".into(), core)],
+                };
                 let style_color = style_color(&b.style);
                 div()
                     .flex()
@@ -651,8 +657,8 @@ impl AppView {
                             .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(stats))
                             .child(div().flex_1())
                             .child(
-                                primary_button(SharedString::from(format!("apply-build-{i}")), "Add runes").on_click(cx.listener(
-                                    move |this, _, _, cx| this.apply(label.clone(), page.clone(), spell_pair, cx),
+                                primary_button(SharedString::from(format!("apply-build-{i}")), "Add Build").on_click(cx.listener(
+                                    move |this, _, _, cx| this.apply_build(import.clone(), cx),
                                 )),
                             ),
                     )

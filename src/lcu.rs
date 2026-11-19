@@ -27,10 +27,46 @@ pub struct Lcu {
 pub struct ChampSelect {
     /// Hovered or locked champion (0 = none yet).
     pub my_champion: u32,
+    /// My pick is locked in.
+    pub my_locked: bool,
     pub my_lane: Option<Lane>,
-    /// The enemy in my lane, once they're visible.
+    /// The enemy in my lane, if the client says enemy roles (most queues don't).
     pub lane_opponent: Option<u32>,
+    /// Enemy champions locked in so far.
     pub enemies: Vec<u32>,
+    pub my_team: Vec<CsPlayer>,
+    pub their_team: Vec<CsPlayer>,
+    /// Banned champions: (mine, theirs).
+    pub bans: (Vec<u32>, Vec<u32>),
+    /// "PLANNING", "BAN_PICK", "FINALIZATION", …
+    pub phase: String,
+    pub queue_id: i64,
+    pub game_id: u64,
+}
+
+/// One player in champ select.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CsPlayer {
+    pub cell: i64,
+    /// Locked (or, for my team, picked) champion; 0 = none.
+    pub champion: u32,
+    /// Hovered champion (my team only).
+    pub intent: u32,
+    pub locked: bool,
+    pub lane: Option<Lane>,
+    pub spells: (u32, u32),
+    /// "Name#TAG" when the client shows it (ranked hides other players).
+    pub name: Option<String>,
+    pub is_me: bool,
+}
+
+/// Who's signed in: Riot ID and the U.GG region id ("na1").
+#[derive(Clone, Debug, PartialEq)]
+pub struct Me {
+    pub game_name: String,
+    pub tag_line: String,
+    pub region: String,
+    pub summoner_id: u64,
 }
 
 impl Lcu {
@@ -83,6 +119,16 @@ impl Lcu {
             my_team: Vec<Member>,
             #[serde(default)]
             their_team: Vec<Member>,
+            #[serde(default)]
+            actions: Vec<Vec<Action>>,
+            #[serde(default)]
+            bans: Bans,
+            #[serde(default)]
+            timer: Timer,
+            #[serde(default)]
+            queue_id: i64,
+            #[serde(default)]
+            game_id: u64,
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -94,19 +140,158 @@ impl Lcu {
             champion_pick_intent: u32,
             #[serde(default)]
             assigned_position: String,
+            #[serde(default)]
+            spell1_id: u64,
+            #[serde(default)]
+            spell2_id: u64,
+            #[serde(default)]
+            game_name: String,
+            #[serde(default)]
+            tag_line: String,
+            #[serde(default)]
+            name_visibility_type: String,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Action {
+            #[serde(default)]
+            actor_cell_id: i64,
+            #[serde(default)]
+            champion_id: u32,
+            #[serde(default)]
+            completed: bool,
+            #[serde(rename = "type", default)]
+            kind: String,
+            #[serde(default)]
+            is_ally_action: bool,
+        }
+        #[derive(Deserialize, Default)]
+        #[serde(rename_all = "camelCase")]
+        struct Bans {
+            #[serde(default)]
+            my_team_bans: Vec<u32>,
+            #[serde(default)]
+            their_team_bans: Vec<u32>,
+        }
+        #[derive(Deserialize, Default)]
+        struct Timer {
+            #[serde(default)]
+            phase: String,
         }
         let s: Session = serde_json::from_value(self.get("/lol-champ-select/v1/session").ok()?).ok()?;
-        let me = s.my_team.iter().find(|m| m.cell_id == s.local_player_cell_id)?;
-        let my_lane = Lane::from_client(&me.assigned_position);
-        let my_champion = if me.champion_id != 0 { me.champion_id } else { me.champion_pick_intent };
-        let lane_opponent = my_lane.and_then(|lane| {
-            s.their_team
-                .iter()
-                .find(|m| Lane::from_client(&m.assigned_position) == Some(lane) && m.champion_id != 0)
-                .map(|m| m.champion_id)
+        let actions: Vec<&Action> = s.actions.iter().flatten().collect();
+        let locked = |cell: i64| actions.iter().any(|a| a.actor_cell_id == cell && a.kind == "pick" && a.completed);
+        let player = |m: &Member, mine: bool| {
+            let visible = !m.game_name.is_empty() && m.name_visibility_type != "HIDDEN";
+            CsPlayer {
+                cell: m.cell_id,
+                champion: m.champion_id,
+                intent: m.champion_pick_intent,
+                // Enemies only show champions once they're locked in.
+                locked: if mine { locked(m.cell_id) } else { m.champion_id != 0 },
+                lane: Lane::from_client(&m.assigned_position),
+                spells: (m.spell1_id as u32, m.spell2_id as u32),
+                name: visible.then(|| if m.tag_line.is_empty() { m.game_name.clone() } else { format!("{}#{}", m.game_name, m.tag_line) }),
+                is_me: mine && m.cell_id == s.local_player_cell_id,
+            }
+        };
+        let my_team: Vec<CsPlayer> = s.my_team.iter().map(|m| player(m, true)).collect();
+        let their_team: Vec<CsPlayer> = s.their_team.iter().map(|m| player(m, false)).collect();
+        let me = my_team.iter().find(|p| p.is_me)?.clone();
+        let my_champion = if me.champion != 0 { me.champion } else { me.intent };
+        let lane_opponent = me.lane.and_then(|lane| {
+            their_team.iter().find(|p| p.lane == Some(lane) && p.champion != 0).map(|p| p.champion)
         });
-        let enemies = s.their_team.iter().map(|m| m.champion_id).filter(|&c| c != 0).collect();
-        Some(ChampSelect { my_champion, my_lane, lane_opponent, enemies })
+        let enemies = their_team.iter().map(|p| p.champion).filter(|&c| c != 0).collect();
+        // Bans: from the session's lists, or from completed ban actions.
+        let mut bans = (s.bans.my_team_bans.clone(), s.bans.their_team_bans.clone());
+        if bans.0.is_empty() && bans.1.is_empty() {
+            for a in actions.iter().filter(|a| a.kind == "ban" && a.completed && a.champion_id != 0) {
+                if a.is_ally_action {
+                    bans.0.push(a.champion_id);
+                } else {
+                    bans.1.push(a.champion_id);
+                }
+            }
+        }
+        Some(ChampSelect {
+            my_champion,
+            my_locked: me.locked,
+            my_lane: me.lane,
+            lane_opponent,
+            enemies,
+            my_team,
+            their_team,
+            bans,
+            phase: s.timer.phase,
+            queue_id: s.queue_id,
+            game_id: s.game_id,
+        })
+    }
+
+    /// "None", "Lobby", "Matchmaking", "ChampSelect", "InProgress", "EndOfGame", …
+    pub fn phase(&self) -> String {
+        self.get("/lol-gameflow/v1/gameflow-phase")
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+
+    /// The signed-in player's Riot ID and region.
+    pub fn me(&self) -> Result<Me> {
+        let s = self.get("/lol-summoner/v1/current-summoner")?;
+        let region = self
+            .get("/riotclient/region-locale")
+            .ok()
+            .and_then(|v| v.get("region").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default();
+        Ok(Me {
+            game_name: s.get("gameName").and_then(Value::as_str).unwrap_or_default().to_string(),
+            tag_line: s.get("tagLine").and_then(Value::as_str).unwrap_or_default().to_string(),
+            region: ugg_region(&region).to_string(),
+            summoner_id: s.get("summonerId").and_then(Value::as_u64).unwrap_or(0),
+        })
+    }
+
+    /// Writes an item set for `champion` (shown in the in-game shop). Poro's
+    /// sets are titled "Poro: …" and replace each other; the player's own
+    /// sets are left alone.
+    pub fn apply_item_set(&self, title: &str, champion: u32, blocks: &[(String, Vec<u32>)]) -> Result<()> {
+        let me = self.me()?;
+        let path = format!("/lol-item-sets/v1/item-sets/{}/sets", me.summoner_id);
+        let current = self.get(&path).unwrap_or(json!({}));
+        let mut sets: Vec<Value> = current
+            .get("itemSets")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| !s.get("title").and_then(Value::as_str).is_some_and(|t| t.starts_with(PAGE_PREFIX)))
+            .collect();
+        let uid = format!("poro-{champion}");
+        sets.push(json!({
+            "title": format!("{PAGE_PREFIX}{title}"),
+            "associatedChampions": [champion],
+            "associatedMaps": [11],
+            "blocks": blocks.iter().filter(|(_, items)| !items.is_empty()).map(|(name, items)| json!({
+                "type": name,
+                "items": items.iter().map(|i| json!({ "id": i.to_string(), "count": 1 })).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "map": "any",
+            "mode": "any",
+            "preferredItemSlots": [],
+            "sortrank": 0,
+            "startedFrom": "blank",
+            "type": "custom",
+            "uid": uid,
+        }));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        self.request(
+            reqwest::Method::PUT,
+            &path,
+            Some(json!({ "accountId": me.summoner_id, "itemSets": sets, "timestamp": now })),
+        )?;
+        Ok(())
     }
 
     /// Creates `page` as the active rune page, named `name`. Reuses the
@@ -168,6 +353,30 @@ impl Lcu {
             Some(json!({ "spell1Id": spell1, "spell2Id": spell2 })),
         )?;
         Ok(())
+    }
+}
+
+/// The client's region ("NA", "EUW", …) as U.GG's region id ("na1", …).
+pub fn ugg_region(region: &str) -> &'static str {
+    match region.to_uppercase().as_str() {
+        "NA" | "NA1" => "na1",
+        "EUW" | "EUW1" => "euw1",
+        "EUNE" | "EUN1" => "eun1",
+        "KR" => "kr",
+        "BR" | "BR1" => "br1",
+        "LAN" | "LA1" => "la1",
+        "LAS" | "LA2" => "la2",
+        "OCE" | "OC1" => "oc1",
+        "RU" => "ru",
+        "TR" | "TR1" => "tr1",
+        "JP" | "JP1" => "jp1",
+        "PH" | "PH2" => "ph2",
+        "SG" | "SG2" => "sg2",
+        "TH" | "TH2" => "th2",
+        "TW" | "TW2" => "tw2",
+        "VN" | "VN2" => "vn2",
+        "ME" | "ME1" => "me1",
+        _ => "na1",
     }
 }
 
@@ -236,4 +445,48 @@ fn from_process_command_line() -> Option<(u16, String)> {
 #[cfg(not(windows))]
 fn from_process_command_line() -> Option<(u16, String)> {
     None
+}
+
+/// A made-up champ select for testing without a League client
+/// (PORO_DEMO_CS=1): picks lock in over the first ~20 seconds.
+pub fn demo_champ_select(secs: u64) -> ChampSelect {
+    let lane = |s: &str| Lane::from_client(s);
+    let ally = |cell: i64, champ: u32, at: u64, pos: &str, name: Option<&str>| CsPlayer {
+        cell,
+        champion: if secs >= at { champ } else { 0 },
+        intent: champ,
+        locked: secs >= at,
+        lane: lane(pos),
+        spells: (4, 14),
+        name: name.map(str::to_string),
+        is_me: cell == 2,
+    };
+    let enemy = |cell: i64, champ: u32, at: u64| CsPlayer {
+        cell,
+        champion: if secs >= at { champ } else { 0 },
+        locked: secs >= at,
+        ..Default::default()
+    };
+    let my_team = vec![
+        ally(0, 122, 4, "top", None),
+        ally(1, 64, 8, "jungle", None),
+        ally(2, 103, 10, "middle", None),
+        ally(3, 222, 14, "bottom", None),
+        ally(4, 412, 16, "utility", None),
+    ];
+    let their_team = vec![enemy(5, 111, 6), enemy(6, 238, 12), enemy(7, 86, 18), enemy(8, 81, 20), enemy(9, 60, 22)];
+    let me = my_team[2].clone();
+    ChampSelect {
+        my_champion: me.intent,
+        my_locked: me.locked,
+        my_lane: me.lane,
+        lane_opponent: None,
+        enemies: their_team.iter().map(|p| p.champion).filter(|&c| c != 0).collect(),
+        my_team,
+        their_team,
+        bans: (vec![157, 91, 0, 0, 0], vec![11, 84, 0, 0, 0]),
+        phase: "BAN_PICK".into(),
+        queue_id: 420,
+        game_id: 1,
+    }
 }

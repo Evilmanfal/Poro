@@ -3,6 +3,7 @@
 
 mod counters;
 mod games;
+mod live_game;
 mod matchup;
 mod theme;
 mod tierlist;
@@ -55,7 +56,38 @@ pub enum Tab {
     TierList,
     Matchup,
     Counters,
+    LiveGame,
     Settings,
+}
+
+/// A build for "Add Build".
+#[derive(Clone)]
+pub struct BuildImport {
+    pub name: String,
+    pub champion: u32,
+    pub page: Option<RunePage>,
+    pub spells: Option<(u32, u32)>,
+    /// Item set blocks: (title, items).
+    pub blocks: Vec<(String, Vec<u32>)>,
+}
+
+fn join_and(parts: &[&str]) -> String {
+    match parts {
+        [] => String::new(),
+        [a] => a.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What auto-follow already took from this champ select.
+#[derive(Default)]
+struct Followed {
+    game_id: u64,
+    champion: u32,
+    opponent: u32,
+    lane: Option<Lane>,
+    /// Switched to the Champion Matchup tab already.
+    switched: bool,
 }
 
 #[derive(Clone, PartialEq)]
@@ -117,6 +149,8 @@ pub struct AppView {
     pub c_lane: Lane,
     c_lane_auto: bool,
     pub input_c: Entity<TextInput>,
+    /// Tier List search.
+    pub input_t: Entity<TextInput>,
     pub counters: Loadable<Counters>,
     /// lolalytics counters for the VS card's "Weak Against", by
     /// (champion, lane, patch); hardest matchups first.
@@ -127,7 +161,12 @@ pub struct AppView {
     // League client
     pub client: ClientStatus,
     pub follow_client: bool,
-    last_followed: Option<ChampSelect>,
+    last_followed: Option<Followed>,
+    /// The client's gameflow phase ("ChampSelect", "InProgress", …).
+    pub phase: String,
+    pub live: live_game::LiveState,
+    /// Spells from an Add Build outside champ select: (champion, spells).
+    pending_spells: Option<(u32, (u32, u32))>,
     lcu: Arc<Mutex<Option<Lcu>>>,
     pub toast: Option<(String, bool)>,
     toast_gen: u64,
@@ -162,12 +201,14 @@ impl AppView {
         let input_a = cx.new(|cx| TextInput::new(cx, "Search a champion", ""));
         let input_b = cx.new(|cx| TextInput::new(cx, "Search an opponent", ""));
         let input_c = cx.new(|cx| TextInput::new(cx, "Search a champion", ""));
-        for input in [&input_a, &input_b, &input_c] {
+        let input_t = cx.new(|cx| TextInput::new(cx, "Search any champion", ""));
+        for input in [&input_a, &input_b, &input_c, &input_t] {
             cx.observe(input, |_, _, cx| cx.notify()).detach();
         }
         cx.subscribe(&input_a, |this, _, _: &Submitted, cx| this.pick_first(Slot::A, cx)).detach();
         cx.subscribe(&input_b, |this, _, _: &Submitted, cx| this.pick_first(Slot::B, cx)).detach();
         cx.subscribe(&input_c, |this, _, _: &Submitted, cx| this.pick_first(Slot::C, cx)).detach();
+        cx.subscribe(&input_t, |this, _, _: &Submitted, cx| this.open_first_search_result(cx)).detach();
         window.focus(&input_a.focus_handle(cx));
 
         let mut view = AppView {
@@ -203,6 +244,7 @@ impl AppView {
             c_lane: Lane::Middle,
             c_lane_auto: true,
             input_c,
+            input_t,
             counters: Loadable::Idle,
             counter_cache: HashMap::new(),
             sort: (SortCol::VsWr, true),
@@ -210,6 +252,9 @@ impl AppView {
             client: ClientStatus::NotRunning,
             follow_client: true,
             last_followed: None,
+            phase: String::new(),
+            live: Default::default(),
+            pending_spells: None,
             lcu: Arc::new(Mutex::new(None)),
             toast: None,
             toast_gen: 0,
@@ -614,11 +659,16 @@ impl AppView {
 
     fn poll_client(&mut self, cx: &mut Context<Self>) {
         let lcu = self.lcu.clone();
+        // Testing without a League client: PORO_DEMO_CS=1 plays a made-up champ select.
+        let demo_start = std::env::var_os("PORO_DEMO_CS").map(|_| std::time::Instant::now());
         cx.spawn(async move |this, cx| loop {
             let lcu = lcu.clone();
             let status = cx
                 .background_executor()
                 .spawn(async move {
+                    if let Some(t) = demo_start {
+                        return (ClientStatus::ChampSelect(crate::lcu::demo_champ_select(t.elapsed().as_secs())), "ChampSelect".to_string());
+                    }
                     let mut guard = lcu.lock().unwrap();
                     if guard.as_ref().is_some_and(|l| !l.alive()) {
                         *guard = None;
@@ -627,15 +677,27 @@ impl AppView {
                         *guard = Lcu::connect().ok();
                     }
                     match guard.as_ref() {
-                        None => ClientStatus::NotRunning,
-                        Some(l) => match l.champ_select() {
-                            Some(cs) => ClientStatus::ChampSelect(cs),
-                            None => ClientStatus::Connected,
-                        },
+                        None => (ClientStatus::NotRunning, String::new()),
+                        Some(l) => {
+                            let status = match l.champ_select() {
+                                Some(cs) => ClientStatus::ChampSelect(cs),
+                                None => ClientStatus::Connected,
+                            };
+                            (status, l.phase())
+                        }
                     }
                 })
                 .await;
-            let alive = this.update(cx, |this, cx| this.on_client_status(status, cx));
+            let (status, phase) = status;
+            let alive = this.update(cx, |this, cx| {
+                if this.phase != phase {
+                    this.phase = phase;
+                    cx.notify();
+                }
+                this.on_client_status(status, cx);
+                // Live Game keeps its data coming even while another tab is open.
+                this.ensure_live(cx);
+            });
             if alive.is_err() {
                 break;
             }
@@ -648,28 +710,79 @@ impl AppView {
         if status == self.client {
             return;
         }
+        if matches!(status, ClientStatus::ChampSelect(_)) && !matches!(self.client, ClientStatus::ChampSelect(_)) {
+            self.reset_live_game();
+        }
+        if matches!(status, ClientStatus::NotRunning) {
+            self.live.me = None;
+        }
         if let ClientStatus::ChampSelect(cs) = &status {
-            if self.follow_client && cs.my_champion != 0 && self.last_followed.as_ref() != Some(cs) {
-                self.last_followed = Some(cs.clone());
-                if self.a != Some(cs.my_champion) {
-                    self.set_champion(Slot::A, cs.my_champion, cx);
-                }
-                if let Some(opp) = cs.lane_opponent {
-                    if self.b != Some(opp) {
-                        self.set_champion(Slot::B, opp, cx);
-                    }
-                }
-                if let Some(lane) = cs.my_lane {
-                    self.lane = lane;
-                    self.lane_auto = false;
-                }
-                self.tab = Tab::Matchup;
+            if self.follow_client {
+                self.follow_champ_select(cs, cx);
             }
-        } else {
-            self.last_followed = None;
+            self.apply_pending_spells(cs, cx);
         }
         self.client = status;
         cx.notify();
+    }
+
+    /// Fills in the Champion Matchup from champ select. Each thing is set only
+    /// when it changes, and the tab switches once per champ select, when my
+    /// pick locks in, so browsing other tabs isn't interrupted.
+    fn follow_champ_select(&mut self, cs: &ChampSelect, cx: &mut Context<Self>) {
+        // A new champ select starts over; a brief hiccup reading the same one doesn't.
+        let mut f = self.last_followed.take().filter(|f| f.game_id == cs.game_id).unwrap_or_default();
+        f.game_id = cs.game_id;
+        if let Some(lane) = cs.my_lane {
+            if f.lane != Some(lane) {
+                f.lane = Some(lane);
+                self.lane = lane;
+                self.lane_auto = false;
+            }
+        }
+        if cs.my_locked && cs.my_champion != 0 && f.champion != cs.my_champion {
+            f.champion = cs.my_champion;
+            if self.a != Some(cs.my_champion) {
+                self.set_champion(Slot::A, cs.my_champion, cx);
+            }
+            if !f.switched {
+                f.switched = true;
+                self.tab = Tab::Matchup;
+            }
+        }
+        if let Some(opp) = self.lane_opponent(cs) {
+            if f.opponent != opp {
+                f.opponent = opp;
+                if self.b != Some(opp) {
+                    self.set_champion(Slot::B, opp, cx);
+                }
+            }
+        }
+        self.last_followed = Some(f);
+    }
+
+    /// The enemy in my lane: from the client when it says enemy roles,
+    /// otherwise predicted from the enemies' locked champions.
+    pub fn lane_opponent(&self, cs: &ChampSelect) -> Option<u32> {
+        if let Some(o) = cs.lane_opponent {
+            return Some(o);
+        }
+        let lane = cs.my_lane.or(if self.lane_auto { None } else { Some(self.lane) })?;
+        self.enemy_roles(cs).into_iter().find(|(_, l)| *l == Some(lane)).map(|(c, _)| c)
+    }
+
+    /// Locked enemy champions with their roles (given by the client or predicted).
+    pub fn enemy_roles(&self, cs: &ChampSelect) -> Vec<(u32, Option<Lane>)> {
+        let locked: Vec<&crate::lcu::CsPlayer> = cs.their_team.iter().filter(|p| p.champion != 0).collect();
+        if !locked.is_empty() && locked.iter().all(|p| p.lane.is_some()) {
+            return locked.iter().map(|p| (p.champion, p.lane)).collect();
+        }
+        let champs: Vec<u32> = locked.iter().map(|p| p.champion).collect();
+        let roles = match &self.tiers.list {
+            Some(Loadable::Ready(list)) => crate::data::ugg::predict_roles(list, &champs),
+            _ => vec![None; champs.len()],
+        };
+        champs.into_iter().zip(roles).collect()
     }
 
     /// Adds or removes the tray icon to match the "Exit into tray" setting.
@@ -736,11 +849,18 @@ impl AppView {
         }
     }
 
-    /// Puts `page` (and optionally summoner spells) into the League client.
-    pub fn apply(&mut self, name: String, page: RunePage, spells: Option<(u32, u32)>, cx: &mut Context<Self>) {
+    /// "Add Build": puts a build's rune page, summoner spells and items into
+    /// the League client. Spells can only be set in champ select, so outside
+    /// of one they're kept for the next champ select on that champion. Items
+    /// become an item set, shown in the in-game shop.
+    pub fn apply_build(&mut self, build: BuildImport, cx: &mut Context<Self>) {
         let lcu = self.lcu.clone();
         let in_champ_select = matches!(self.client, ClientStatus::ChampSelect(_));
-        self.show_toast("Sending runes to the League client…".into(), true, cx);
+        let spells = build.spells.map(|s| self.settings.flash_key.order(s));
+        if !in_champ_select {
+            self.pending_spells = spells.map(|s| (build.champion, s));
+        }
+        self.show_toast("Sending the build to the League client…".into(), true, cx);
         spawn_job(
             cx,
             move || {
@@ -749,19 +869,69 @@ impl AppView {
                     *guard = Some(Lcu::connect()?);
                 }
                 let l = guard.as_ref().unwrap();
-                l.apply_runes(&name, &page)?;
-                let mut msg = format!("Rune page \"{name}\" is now active");
-                if let (Some((s1, s2)), true) = (spells, in_champ_select) {
-                    match l.apply_spells(s1, s2) {
-                        Ok(()) => msg.push_str(", summoner spells set"),
-                        Err(e) => msg.push_str(&format!(" (spells not set: {e})")),
+                let mut done = Vec::new();
+                let mut failed = Vec::new();
+                if let Some(page) = &build.page {
+                    match l.apply_runes(&build.name, page) {
+                        Ok(()) => done.push("runes"),
+                        Err(e) => failed.push(format!("runes: {e}")),
                     }
+                }
+                let mut spells_later = false;
+                if let Some((s1, s2)) = spells {
+                    if in_champ_select {
+                        match l.apply_spells(s1, s2) {
+                            Ok(()) => done.push("summoner spells"),
+                            Err(e) => failed.push(format!("spells: {e}")),
+                        }
+                    } else {
+                        spells_later = true;
+                    }
+                }
+                if build.champion != 0 && build.blocks.iter().any(|(_, items)| !items.is_empty()) {
+                    match l.apply_item_set(&build.name, build.champion, &build.blocks) {
+                        Ok(()) => done.push("item set"),
+                        Err(e) => failed.push(format!("items: {e}")),
+                    }
+                }
+                if done.is_empty() && !failed.is_empty() {
+                    anyhow::bail!("{}", failed.join("; "));
+                }
+                let mut msg = format!("\"{}\": {} added", build.name, join_and(&done));
+                if spells_later {
+                    msg.push_str(". Summoner spells will be set in your next champ select");
+                }
+                if !failed.is_empty() {
+                    msg.push_str(&format!(" (not added: {})", failed.join("; ")));
                 }
                 Ok(msg)
             },
             |this, r, cx| match r {
                 Ok(msg) => this.show_toast(msg, true, cx),
-                Err(e) => this.show_toast(format!("Couldn't apply runes: {e:#}"), false, cx),
+                Err(e) => this.show_toast(format!("Couldn't add the build: {e:#}"), false, cx),
+            },
+        );
+    }
+
+    /// Sets summoner spells kept from an Add Build outside champ select, once
+    /// I'm on that champion.
+    fn apply_pending_spells(&mut self, cs: &ChampSelect, cx: &mut Context<Self>) {
+        let Some((champ, (s1, s2))) = self.pending_spells else { return };
+        if cs.my_champion == 0 || (champ != 0 && champ != cs.my_champion) {
+            return;
+        }
+        self.pending_spells = None;
+        let lcu = self.lcu.clone();
+        spawn_job(
+            cx,
+            move || {
+                let guard = lcu.lock().unwrap();
+                guard.as_ref().ok_or_else(|| anyhow::anyhow!("not connected"))?.apply_spells(s1, s2)
+            },
+            |this, r, cx| {
+                if r.is_ok() {
+                    this.show_toast("Summoner spells set from your build".into(), true, cx);
+                }
             },
         );
     }
@@ -903,7 +1073,7 @@ impl AppView {
                     if let Some(l) = cs.my_lane {
                         s = format!("{s} {}", l.label());
                     }
-                    if let Some(o) = cs.lane_opponent {
+                    if let Some(o) = self.lane_opponent(cs) {
                         s = format!("{s} vs {}", name(o));
                     }
                 }
@@ -928,6 +1098,7 @@ impl AppView {
             .child(tab("Tier List", Tab::TierList, self, cx))
             .child(tab("Champion Matchup", Tab::Matchup, self, cx))
             .child(tab("Counters", Tab::Counters, self, cx))
+            .child(tab("Live Game", Tab::LiveGame, self, cx))
             .child(tab("Settings", Tab::Settings, self, cx))
             .child(div().flex_1())
             .child(patch_picker)
@@ -1021,9 +1192,10 @@ impl Render for AppView {
             div().p(px(24.)).text_color(rgb(MUTED)).child("Loading champion data…").into_any_element()
         } else {
             match self.tab {
-                Tab::TierList => self.render_tier_list(cx),
+                Tab::TierList => self.render_tier_list(window, cx),
                 Tab::Matchup => self.render_matchup(window, cx),
                 Tab::Counters => self.render_counters(window, cx),
+                Tab::LiveGame => self.render_live_game(cx),
                 Tab::Settings => self.render_settings(cx),
             }
         };
@@ -1062,6 +1234,7 @@ impl Render for AppView {
                         Tab::TierList => "body-tierlist",
                         Tab::Matchup => "body-matchup",
                         Tab::Counters => "body-counters",
+                        Tab::LiveGame => "body-livegame",
                         Tab::Settings => "body-settings",
                     })
                     .flex_1()

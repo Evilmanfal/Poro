@@ -5,7 +5,7 @@ use gpui::{div, prelude::*, px, AnyElement, Context, FontWeight, SharedString};
 
 use super::theme::*;
 use super::AppView;
-use crate::settings::Overlays;
+use crate::settings::{FlashKey, Overlays};
 
 type Getter = fn(&mut Overlays) -> &mut bool;
 
@@ -100,6 +100,48 @@ impl AppView {
                     )),
             )
             .child(switch(tray_on));
+        let flash = self.settings.flash_key;
+        let flash_chip = |key: FlashKey, label: &'static str, cx: &mut Context<Self>| {
+            let active = flash == key;
+            div()
+                .id(SharedString::from(format!("flash-{label}")))
+                .px(px(12.))
+                .py(px(5.))
+                .rounded(px(6.))
+                .border_1()
+                .text_size(px(13.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .cursor_pointer()
+                .when(active, |d| d.border_color(rgb(ACCENT)).text_color(rgb(ACCENT)).bg(rgba(0x37c8ab22)))
+                .when(!active, |d| d.border_color(rgb(BORDER)).text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings.flash_key = key;
+                    crate::settings::save(&this.settings);
+                    cx.notify();
+                }))
+                .child(label)
+        };
+        let flash_row = div()
+            .flex()
+            .items_center()
+            .gap(px(16.))
+            .p(px(14.))
+            .rounded(px(8.))
+            .bg(rgb(PANEL_2))
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(div().text_size(px(15.)).font_weight(FontWeight::SEMIBOLD).child("Flash key"))
+                    .child(div().text_size(px(13.)).text_color(rgb(0xb4b6c0)).child(
+                        "Where Flash goes when Add Build sets your summoner spells.",
+                    )),
+            )
+            .child(flash_chip(FlashKey::Build, "As in build", cx))
+            .child(flash_chip(FlashKey::D, "D", cx))
+            .child(flash_chip(FlashKey::F, "F", cx));
         div()
             .flex()
             .flex_col()
@@ -117,7 +159,7 @@ impl AppView {
                          draw over Fullscreen. Overlays let your clicks through to the game.",
                     )),
             )
-            .child(card().flex().flex_col().gap(px(10.)).child(section_title("General")).child(tray_row))
+            .child(card().flex().flex_col().gap(px(10.)).child(section_title("General")).child(tray_row).child(flash_row))
             .child(
                 card()
                     .flex()

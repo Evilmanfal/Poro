@@ -58,7 +58,7 @@ pub struct TierList {
     pub patch: String,
 }
 
-fn lane_of(role: &str) -> Option<Lane> {
+pub fn lane_of(role: &str) -> Option<Lane> {
     match role {
         "top" => Some(Lane::Top),
         "jungle" => Some(Lane::Jungle),
@@ -327,4 +327,68 @@ pub fn champion_builds(champ: u32, lane: Lane, patch: &str, live: bool) -> Resul
     let mut out = vec![main];
     out.extend(styles.into_iter().take(3));
     Ok(out)
+}
+
+// ---- Role prediction ----
+
+/// Guesses each champion's role from how often U.GG sees it in each role,
+/// giving every champion a different role (the likeliest combination).
+/// Champions are enemy picks, so at most 5; the result is in the same order.
+pub fn predict_roles(list: &TierList, champs: &[u32]) -> Vec<Option<Lane>> {
+    const LANES: [Lane; 5] = [Lane::Top, Lane::Jungle, Lane::Middle, Lane::Bottom, Lane::Support];
+    let champs: Vec<u32> = champs.iter().copied().take(5).collect();
+    // Share of each champion's games played in each lane.
+    let share: Vec<[f64; 5]> = champs
+        .iter()
+        .map(|&c| {
+            let mut row = [0.0; 5];
+            for e in list.entries.iter().filter(|e| e.champion == c) {
+                if let Some(i) = LANES.iter().position(|&l| l == e.lane) {
+                    row[i] += e.pick_rate;
+                }
+            }
+            let sum: f64 = row.iter().sum();
+            row.map(|x| if sum > 0.0 { x / sum } else { 0.2 })
+        })
+        .collect();
+    // Try every way to give the champions different lanes (5!/(5-k)! ≤ 120).
+    fn search(share: &[[f64; 5]], i: usize, used: &mut [bool; 5], cur: &mut Vec<usize>, best: &mut (f64, Vec<usize>)) {
+        if i == share.len() {
+            let score: f64 = cur.iter().enumerate().map(|(c, &l)| (share[c][l] + 1e-4).ln()).sum();
+            if score > best.0 {
+                *best = (score, cur.clone());
+            }
+            return;
+        }
+        for l in 0..5 {
+            if !used[l] {
+                used[l] = true;
+                cur.push(l);
+                search(share, i + 1, used, cur, best);
+                cur.pop();
+                used[l] = false;
+            }
+        }
+    }
+    let mut best = (f64::NEG_INFINITY, Vec::new());
+    search(&share, 0, &mut [false; 5], &mut Vec::new(), &mut best);
+    let mut out: Vec<Option<Lane>> = best.1.iter().map(|&l| Some(LANES[l])).collect();
+    out.resize(champs.len(), None);
+    out
+}
+
+#[cfg(test)]
+mod role_tests {
+    #[test]
+    fn live_predict_roles() {
+        let t = super::tier_list("16.23", true).unwrap();
+        // Garen, Elise, Zed, Ezreal, Nautilus in a scrambled order.
+        let champs = [111, 238, 86, 81, 60];
+        let roles = super::predict_roles(&t, &champs);
+        println!("{roles:?}");
+        use super::Lane::*;
+        assert_eq!(roles, vec![Some(Support), Some(Middle), Some(Top), Some(Bottom), Some(Jungle)]);
+        // Partial: just two picks.
+        println!("{:?}", super::predict_roles(&t, &[81, 412]));
+    }
 }

@@ -23,6 +23,8 @@ fn format_of(bytes: &[u8]) -> ImageFormat {
         ImageFormat::Webp
     } else if bytes.starts_with(&[0xFF, 0xD8]) {
         ImageFormat::Jpeg
+    } else if bytes.trim_ascii_start().starts_with(b"<svg") || bytes.trim_ascii_start().starts_with(b"<?xml") {
+        ImageFormat::Svg
     } else {
         ImageFormat::Png
     }

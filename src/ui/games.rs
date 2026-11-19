@@ -1,5 +1,5 @@
 //! deeplol's list of real games of the matchup (pros and high-elo players),
-//! each with its full build and an "Add runes" button.
+//! each with its full build and an "Add Build" button.
 
 use gpui::{div, prelude::*, px, AnyElement, App, Context, FontWeight, SharedString};
 
@@ -207,8 +207,13 @@ impl AppView {
             g.item_final.iter().take(7).map(|&it| tips::item(data, it, 26., cx)).collect();
 
         let name = format!("{} {} vs {}", g.display_name(), data.champion_name(g.champion_id), data.champion_name(g.enemy_champion_id));
-        let spell_pair = Some((g.spell.spell_1, g.spell.spell_2));
-        let page_for_click = page.clone();
+        let import = super::BuildImport {
+            name,
+            champion: g.champion_id,
+            page: Some(page.clone()),
+            spells: Some((g.spell.spell_1, g.spell.spell_2)),
+            blocks: vec![("Items from this game".into(), g.item_final.iter().copied().filter(|&i| i != 0).collect())],
+        };
         let id = g.match_id.clone();
         let player = div()
             .flex()
@@ -306,10 +311,10 @@ impl AppView {
             .child(div().flex().gap(px(3.)).children(items))
             .child(div().flex_1())
             .child(
-                primary_button(SharedString::from(format!("apply-{}", g.match_id)), "Add runes").on_click(cx.listener(
+                primary_button(SharedString::from(format!("apply-{}", g.match_id)), "Add Build").on_click(cx.listener(
                     move |this, _, _, cx| {
                         cx.stop_propagation();
-                        this.apply(name.clone(), page_for_click.clone(), spell_pair, cx);
+                        this.apply_build(import.clone(), cx);
                     },
                 )),
             )

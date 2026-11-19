@@ -8,6 +8,29 @@ pub struct Settings {
     pub overlays: Overlays,
     /// Closing the window keeps Poro running in the system tray.
     pub exit_to_tray: bool,
+    /// Which key Flash goes on when Poro sets summoner spells.
+    pub flash_key: FlashKey,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FlashKey {
+    /// Keep the build's order.
+    #[default]
+    Build,
+    D,
+    F,
+}
+
+impl FlashKey {
+    /// Puts Flash (id 4) on the chosen key; spell 1 is D, spell 2 is F.
+    pub fn order(self, (a, b): (u32, u32)) -> (u32, u32) {
+        const FLASH: u32 = 4;
+        match self {
+            FlashKey::D if b == FLASH => (b, a),
+            FlashKey::F if a == FLASH => (b, a),
+            _ => (a, b),
+        }
+    }
 }
 
 /// In-game overlays. All off until the player turns them on.

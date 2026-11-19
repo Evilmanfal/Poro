@@ -7,13 +7,21 @@ no installer, no account.
 - **Tier List** (main page): U.GG's live tier list (S+, S, A) with All / Top / Jungle / Mid / ADC / Support
   filters. Click a champion for U.GG's builds (recommended plus AP / AD / Tank / … styles): full rune trees,
   spells, starting items, core item order, 4th / 5th / 6th item options with win rates, and skill order.
+  Search any champion, including ones below the S+ to A tiers, to open its page for any role it's played in.
 - **Champion Matchup**: pick two champions for the head-to-head win rate, level 1–6 advantage and tips,
   Weak Against (from lolalytics), up to three builds for that exact matchup taken from real games (named AP,
   AD, Lethality, Bruiser, …), and the matchup's pro and high-elo games with lane and ALL / OTP / PRO filters.
 - **Counters**: lolalytics' counter list for any champion and lane, sortable.
+- **Live Game** (like U.GG's): during champ select, your team's picks, spells, positions and ranks (where the
+  client shows names) and the enemy's locked picks with predicted roles; from the loading screen on, both teams
+  with rank, LP, win rate, champion win rate and KDA, main/off role, duo partners and U.GG's player tags.
+  Anonymous players stay anonymous.
 - **Patches**: the live patch and the five before it.
-- **Add runes**: one click puts a build's rune page (and summoner spells, in champ select) into your League
-  client. During champ select Poro fills in your champion, lane and lane opponent by itself.
+- **Add Build**: one click puts a build's rune page, summoner spells and items (as an item set in the in-game
+  shop) into your League client. Outside champ select the spells are kept for your next champ select on that
+  champion. Settings has a Flash on D / F option.
+- **Champ select auto-follow**: when you lock in, Champion Matchup opens on your champion and lane, and once the
+  enemy locks in your lane opponent is predicted and filled in. It switches tabs only once per champ select.
 - **In-game overlays** (each optional, in Settings): Quick Stats compared with your lane opponent, the next
   skills to level, your item build, and the realized gold difference under every player on the Tab
   scoreboard. They open when a game starts, close when it ends, hide when you alt-tab, and let clicks through.
@@ -32,7 +40,7 @@ It's portable; keep it anywhere. Settings and a data cache live in `%LOCALAPPDAT
   good copy.
 - **Riot's Data Dragon** (champions, items, runes, spells, icons) and **CommunityDragon** (stat shard icons).
 - In game, only the game's own **Live Client Data API** (`127.0.0.1:2999`). Poro never reads game memory.
-  Rune and spell import uses the League client's local API.
+  Rune, spell and item set import uses the League client's local API. Live Game uses U.GG's live game lookup.
 
 Poro isn't affiliated with U.GG, deeplol.gg or lolalytics.com.
 
