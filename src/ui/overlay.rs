@@ -24,6 +24,9 @@ use crate::live::{self, GameData, Player};
 use crate::settings::Overlays;
 use crate::{images, win};
 
+/// Polls (one a second) without an answer before a game counts as over.
+const GAME_END_MISSES: u32 = 4;
+
 #[derive(Default)]
 pub struct OverlayState {
     pub live: Option<GameData>,
@@ -38,6 +41,10 @@ pub struct OverlayState {
     pub tab: bool,
     /// The size GPUI was last told about.
     sized_for: Option<(i32, i32)>,
+    /// A game is running (the game's live data answers).
+    pub in_game: bool,
+    /// Polls in a row without an answer from the game.
+    misses: u32,
 }
 
 impl OverlayState {
@@ -109,13 +116,66 @@ impl AppView {
         if !preview {
             self.ov.preview_until = None;
         }
-        self.ov.live = if preview { Some(demo_game()) } else { live };
+
+        // Game start / end. The game answers once it has loaded; a few
+        // missed polls in a row (not just one hiccup) mean it has ended.
+        if !preview {
+            match (&live, self.ov.in_game) {
+                (Some(_), false) => self.on_game_start(),
+                (Some(_), true) => self.ov.misses = 0,
+                (None, true) => {
+                    self.ov.misses += 1;
+                    if self.ov.misses >= GAME_END_MISSES {
+                        self.on_game_end(cx);
+                    }
+                }
+                (None, false) => {}
+            }
+        }
+        // Keep the last data through a short hiccup, so nothing flickers.
+        self.ov.live = if preview {
+            Some(demo_game())
+        } else if live.is_some() || !self.ov.in_game {
+            live
+        } else {
+            self.ov.live.take()
+        };
 
         if let Some(game) = self.ov.live.clone() {
             self.update_overlay_build(&game, cx);
         }
         self.sync_overlay(cx);
         self.push_overlay(cx);
+    }
+
+    fn on_game_start(&mut self) {
+        if std::env::var_os("PORO_DEBUG").is_some() {
+            eprintln!("overlay: game started");
+        }
+        self.ov.in_game = true;
+        self.ov.misses = 0;
+        // Fresh state for the new game.
+        self.ov.build = None;
+        self.ov.build_for = None;
+        self.ov.tab = false;
+    }
+
+    /// The game is over: close the overlay window and forget the game.
+    fn on_game_end(&mut self, cx: &mut Context<Self>) {
+        if std::env::var_os("PORO_DEBUG").is_some() {
+            eprintln!("overlay: game ended");
+        }
+        self.ov.in_game = false;
+        self.ov.misses = 0;
+        self.ov.live = None;
+        self.ov.build = None;
+        self.ov.build_for = None;
+        self.ov.tab = false;
+        if let Some((handle, _)) = self.ov.window.take() {
+            let _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+        self.ov.placed = None;
+        self.ov.sized_for = None;
     }
 
     /// Shows the overlay exactly over the League game while the game is the

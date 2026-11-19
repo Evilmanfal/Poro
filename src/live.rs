@@ -111,7 +111,9 @@ fn client() -> &'static reqwest::blocking::Client {
 
 /// The current game's data, or an error when no game is running.
 pub fn fetch() -> Result<GameData> {
-    let resp = client().get("https://127.0.0.1:2999/liveclientdata/allgamedata").send()?.error_for_status()?;
+    // PORO_LIVE_URL points at a stand-in game for tests.
+    let url = std::env::var("PORO_LIVE_URL").unwrap_or_else(|_| "https://127.0.0.1:2999/liveclientdata/allgamedata".into());
+    let resp = client().get(url).send()?.error_for_status()?;
     Ok(resp.json()?)
 }
 
