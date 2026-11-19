@@ -99,7 +99,8 @@ impl Hud {
     pub fn scoreboard_kda(&self, left: bool, row: usize) -> (f32, f32) {
         let s = self.s();
         let g = SCOREBOARD;
-        let x = self.width / 2.0 + if left { -g.kda_x } else { g.kda_x } * s;
+        let dx = if left { -g.kda_x_left } else { g.kda_x_right };
+        let x = self.width / 2.0 + dx * s;
         let y = self.height / 2.0 + (g.first_row_y + row as f32 * g.row_h + g.below_kda) * s;
         (x, y)
     }
@@ -117,8 +118,11 @@ impl Hud {
 /// screen centre (in pixels at 1920×1080, HUD scale 0.21).
 #[derive(Clone, Copy)]
 pub struct ScoreboardGeometry {
-    /// Horizontal distance from the centre to each team's K/D/A column.
-    pub kda_x: f32,
+    /// Horizontal distance from the centre to the left team's K/D/A column.
+    pub kda_x_left: f32,
+    /// The same for the right team. The board isn't mirrored (both halves run
+    /// portrait, K/D/A, items left to right), so this is shorter.
+    pub kda_x_right: f32,
     /// The first row's K/D/A line, relative to the screen's vertical centre.
     pub first_row_y: f32,
     /// Distance between rows.
@@ -128,8 +132,9 @@ pub struct ScoreboardGeometry {
 }
 
 // Measured on the live scoreboard at 1920×1080: the first row's K/D/A is
-// centred at (660, 349) and rows are 75 px apart; the right team mirrors it.
-pub const SCOREBOARD: ScoreboardGeometry = ScoreboardGeometry { kda_x: 300.0, first_row_y: -191.0, row_h: 75.0, below_kda: 12.0 };
+// centred at (660, 349) on the left and (1199, 349) on the right; rows are 75 px apart.
+pub const SCOREBOARD: ScoreboardGeometry =
+    ScoreboardGeometry { kda_x_left: 300.0, kda_x_right: 239.0, first_row_y: -191.0, row_h: 75.0, below_kda: 12.0 };
 
 /// League's game.cfg.
 fn config_path() -> Option<PathBuf> {
