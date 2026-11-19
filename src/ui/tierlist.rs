@@ -216,7 +216,7 @@ impl AppView {
                     .child(div().w(px(3.)).h(px(18.)).bg(rgb(ACCENT)))
                     .child(div().text_size(px(18.)).font_weight(FontWeight::BOLD).child("Tier List"))
                     .child(div().text_size(px(14.)).text_color(rgb(MUTED)).child(format!(
-                        "The best champions for {role_name} in patch {patch} · U.GG, Emerald+ ranked"
+                        "The best champions for {role_name} in patch {patch}"
                     ))),
             )
             .child(div().flex().flex_wrap().gap(px(8.)).children(chips))
