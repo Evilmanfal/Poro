@@ -201,7 +201,7 @@ fn install_dirs() -> Vec<PathBuf> {
     if let Ok(text) = std::fs::read_to_string(settings) {
         for line in text.lines() {
             if let Some(v) = line.trim().strip_prefix("product_install_full_path:") {
-                dirs.push(PathBuf::from(v.trim().trim_matches('"')));
+                dirs.push(PathBuf::from(v.trim().trim_matches('"').replace("\\\\", "\\")));
             }
         }
     }

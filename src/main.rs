@@ -4,6 +4,7 @@
 //! (lolalytics.com) and one-click rune pages for the League client.
 
 mod data;
+mod hud;
 mod images;
 mod lcu;
 mod live;

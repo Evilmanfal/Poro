@@ -39,6 +39,12 @@ mod imp {
         (w > 100 && hgt > 100).then_some((p.x, p.y, w, hgt))
     }
 
+    /// A window's outer rectangle: (x, y, width, height).
+    pub fn window_rect(h: Hwnd) -> Option<(i32, i32, i32, i32)> {
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        (unsafe { GetWindowRect(h as HWND, &mut r) } != 0).then_some((r.left, r.top, r.right - r.left, r.bottom - r.top))
+    }
+
     /// The primary screen: (0, 0, width, height).
     pub fn primary_screen() -> (i32, i32, i32, i32) {
         unsafe { (0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) }
@@ -46,6 +52,13 @@ mod imp {
 
     pub fn foreground() -> Hwnd {
         unsafe { GetForegroundWindow() as Hwnd }
+    }
+
+    pub const VK_TAB_KEY: i32 = 0x09;
+
+    /// Whether a key is held right now.
+    pub fn key_down(vk: i32) -> bool {
+        unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
     }
 
     /// Clicks pass through, never takes focus, stays above other windows.
@@ -88,8 +101,15 @@ mod imp {
     pub fn primary_screen() -> (i32, i32, i32, i32) {
         (0, 0, 1920, 1080)
     }
+    pub fn window_rect(_: Hwnd) -> Option<(i32, i32, i32, i32)> {
+        None
+    }
     pub fn foreground() -> Hwnd {
         0
+    }
+    pub const VK_TAB_KEY: i32 = 0x09;
+    pub fn key_down(_: i32) -> bool {
+        false
     }
     pub fn make_overlay(_: Hwnd) {}
     pub fn place(_: Hwnd, _: Option<(i32, i32, i32, i32)>) {}

@@ -19,6 +19,7 @@ use super::theme::*;
 use super::AppView;
 use crate::data::ddragon::{Lane, Skill, StaticData};
 use crate::data::{deeplol, matchup_builds};
+use crate::hud::{Hud, BARON_PIT, DRAGON_PIT};
 use crate::live::{self, GameData, Player};
 use crate::settings::Overlays;
 use crate::{images, win};
@@ -33,6 +34,10 @@ pub struct OverlayState {
     build_for: Option<(u32, Option<u32>)>,
     window: Option<(WindowHandle<OverlayView>, win::Hwnd)>,
     placed: Option<(i32, i32, i32, i32)>,
+    /// Tab is held in the game.
+    pub tab: bool,
+    /// The size GPUI was last told about.
+    sized_for: Option<(i32, i32)>,
 }
 
 impl OverlayState {
@@ -64,6 +69,36 @@ impl AppView {
         .detach();
     }
 
+    /// Watches the Tab key (the scoreboard) while the gold overlay is showing.
+    pub(super) fn start_tab_watch(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(Duration::from_millis(50)).await;
+            let alive = this.update(cx, |this, cx| {
+                this.sync_overlay(cx);
+                let watching = this.settings.overlays.lane_gold && this.ov.placed.is_some() && !this.ov.previewing();
+                let down = watching && win::key_down(win::VK_TAB_KEY);
+                if down != this.ov.tab {
+                    this.ov.tab = down;
+                    this.push_overlay(cx);
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn push_overlay(&mut self, cx: &mut Context<Self>) {
+        if let Some((handle, _)) = self.ov.window {
+            let snap = if self.ov.placed.is_some() { self.overlay_snapshot() } else { None };
+            let _ = handle.update(cx, |view, _, cx| {
+                view.snap = snap;
+                cx.notify();
+            });
+        }
+    }
+
     pub(super) fn preview_overlays(&mut self, cx: &mut Context<Self>) {
         self.ov.preview_until = Some(Instant::now() + Duration::from_secs(20));
         self.on_live(None, cx);
@@ -76,9 +111,18 @@ impl AppView {
         }
         self.ov.live = if preview { Some(demo_game()) } else { live };
 
-        // Where to draw: over the game while it's in front, or over the
-        // whole screen for a preview.
-        let rect = if preview {
+        if let Some(game) = self.ov.live.clone() {
+            self.update_overlay_build(&game, cx);
+        }
+        self.sync_overlay(cx);
+        self.push_overlay(cx);
+    }
+
+    /// Shows the overlay exactly over the League game while the game is the
+    /// window in front, and hides it as soon as it isn't (alt-tab, minimise).
+    /// Runs every 50 ms so it follows the game window right away.
+    fn sync_overlay(&mut self, cx: &mut Context<Self>) {
+        let rect = if self.ov.previewing() {
             Some(win::primary_screen())
         } else if self.ov.live.is_some() && self.settings.overlays.any() {
             win::game_window().and_then(|g| {
@@ -89,25 +133,31 @@ impl AppView {
         } else {
             None
         };
-
-        if let Some(game) = self.ov.live.clone() {
-            self.update_overlay_build(&game, cx);
-        }
         if rect.is_some() && self.ov.window.is_none() {
             self.open_overlay_window(cx);
         }
-        if let Some((handle, hwnd)) = self.ov.window {
-            // Hand the overlay what it draws (it can't read this view while
-            // we're updating it).
-            let snap = if rect.is_some() { self.overlay_snapshot() } else { None };
-            let _ = handle.update(cx, |view, _, cx| {
-                view.snap = snap;
-                cx.notify();
-            });
-            if rect != self.ov.placed {
-                win::place(hwnd, rect);
-                self.ov.placed = rect;
+        let Some((handle, hwnd)) = self.ov.window else { return };
+        if rect != self.ov.placed {
+            win::place(hwnd, rect);
+            let was_hidden = self.ov.placed.is_none();
+            self.ov.placed = rect;
+            if let Some((_, _, w, h)) = rect {
+                if self.ov.sized_for != Some((w, h)) {
+                    // GPUI needs telling about the new size; its resize also
+                    // adds a frame, so the window is put back in place next tick.
+                    self.ov.sized_for = Some((w, h));
+                    let _ = handle.update(cx, |_, window, _| {
+                        let sf = window.scale_factor();
+                        window.resize(Size::new(px(w as f32 / sf), px(h as f32 / sf)));
+                    });
+                }
             }
+            if was_hidden {
+                self.push_overlay(cx);
+            }
+        } else if rect.is_some() && win::window_rect(hwnd) != rect {
+            // Something (GPUI's own resize) moved it: put it back over the game.
+            win::place(hwnd, rect);
         }
     }
 
@@ -154,7 +204,8 @@ impl AppView {
         }
         let my_key = game.me().and_then(|m| data.champion_by_id(m.champion_id())).map(|c| c.key);
         let skills = my_key.and_then(|k| self.skills.get(&k).cloned()).unwrap_or_default();
-        Some(Snapshot { data, game, on, build: self.ov.build.clone(), skills })
+        let tab = self.ov.tab || self.ov.previewing();
+        Some(Snapshot { data, game, on, build: self.ov.build.clone(), skills, tab, placed: self.ov.placed })
     }
 
     fn open_overlay_window(&mut self, cx: &mut Context<Self>) {
@@ -206,35 +257,99 @@ struct Snapshot {
     on: Overlays,
     build: Option<matchup_builds::MatchupBuild>,
     skills: Vec<Skill>,
+    /// Tab (the scoreboard) is held.
+    tab: bool,
+    /// The overlay window's size in screen pixels.
+    placed: Option<(i32, i32, i32, i32)>,
 }
 
 impl Render for OverlayView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let root = div().size_full().relative();
+        let root = div().size_full().relative().font_family("Segoe UI");
         let Some(snap) = self.snap.take() else { return root };
         let size = window.viewport_size();
+        // HUD positions are in game pixels; GPUI lays out in logical pixels.
+        let sf = window.scale_factor();
         let (w, h) = (f32::from(size.width), f32::from(size.height));
-        let mut root = root;
-        if snap.on.lane_gold {
-            root = root.child(div().absolute().top(px(h * 0.055)).left(px(w / 2. - 210.)).w(px(420.)).child(lane_gold(&snap)));
+        let hud = Hud::read((w * sf, h * sf));
+        if std::env::var_os("PORO_DEBUG").is_some() {
+            eprintln!("overlay viewport {w}x{h} scale {sf} placed {:?}", snap.placed);
         }
-        if snap.on.jungle_timers {
-            root = root.child(div().absolute().top(px(h * 0.16)).left(px(12.)).child(jungle_timers(&snap)));
+        let l = |v: f32| px(v / sf);
+        let s = hud.s() / sf;
+        let mut root = root;
+
+        if snap.on.skill_order {
+            // Bottom left, beside the stats panel next to the champion portrait.
+            let (left_edge, bottom) = hud.hud_left();
+            let width = 5.0 * 44.0 * s;
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(px(left_edge / sf - width - 10.0 * s))
+                    .bottom(px(h - bottom / sf))
+                    .w(px(width))
+                    .child(skill_order(&snap, s, cx)),
+            );
         }
         if snap.on.item_build {
-            root = root.child(div().absolute().top(px(h * 0.32)).left(px(12.)).child(item_build(&snap, cx)));
+            // Just above the minimap.
+            let m = hud.minimap();
+            root = root.child(
+                div()
+                    .absolute()
+                    .left(l(m.x))
+                    .w(l(m.w))
+                    .bottom(px(h - (m.y / sf) + 6.0 * s))
+                    .child(item_build(&snap, s, cx)),
+            );
+        }
+        if snap.on.jungle_timers {
+            for (label, (x, y)) in jungle_timers(&snap, &hud) {
+                root = root.child(
+                    div()
+                        .absolute()
+                        .left(px(x / sf - 26.0 * s))
+                        .top(px(y / sf - 9.0 * s))
+                        .w(px(52.0 * s))
+                        .flex()
+                        .justify_center()
+                        .child(outlined(label, 13.0 * s, GOLD)),
+                );
+            }
         }
         if snap.on.quick_stats {
-            root = root.child(div().absolute().top(px(h * 0.16)).right(px(12.)).child(quick_stats(&snap)));
+            root = root.child(div().absolute().top(px(h * 0.16)).left(px(w - 236.0)).w(px(220.0)).child(quick_stats(&snap)));
         }
-        if snap.on.skill_order {
-            root = root.child(
-                div().absolute().bottom(px(h * 0.20)).left(px(w / 2. - 150.)).w(px(300.)).child(skill_order(&snap, cx)),
-            );
+        if snap.on.lane_gold && snap.tab {
+            root = root.child(div().absolute().top(px(h * 0.055)).left(px(w / 2. - 210.)).w(px(420.)).child(lane_gold(&snap)));
         }
         self.snap = Some(snap);
         root
     }
+}
+
+/// Text that stays readable on any background without a box behind it:
+/// a dark copy offset in four directions, then the text on top.
+fn outlined(text: String, size: f32, color: u32) -> AnyElement {
+    let shadow = |dx: f32, dy: f32| {
+        div()
+            .absolute()
+            .left(px(dx))
+            .top(px(dy))
+            .text_size(px(size))
+            .font_weight(FontWeight::BOLD)
+            .text_color(rgba(0x000000e6))
+            .child(text.clone())
+    };
+    div()
+        .relative()
+        .child(shadow(-1.0, 0.0))
+        .child(shadow(1.0, 0.0))
+        .child(shadow(0.0, -1.0))
+        .child(shadow(0.0, 1.0))
+        .child(div().relative().text_size(px(size)).font_weight(FontWeight::BOLD).text_color(rgb(color)).child(text))
+        .into_any_element()
 }
 
 fn panel(title: &str) -> Div {
@@ -242,21 +357,8 @@ fn panel(title: &str) -> Div {
         .flex()
         .flex_col()
         .gap(px(6.))
-        .p(px(10.))
-        .rounded(px(8.))
-        .bg(rgba(0x0e0e14d9))
-        .border_1()
-        .border_color(rgba(0xffffff1f))
         .text_color(rgb(TEXT))
-        .font_family("Segoe UI")
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(div().size(px(6.)).rounded_full().bg(rgb(ACCENT)))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).child(title.to_string())),
-        )
+        .child(outlined(title.to_string(), 12.0, ACCENT))
 }
 
 fn row(label: &str, value: String, color: u32) -> Div {
@@ -264,9 +366,8 @@ fn row(label: &str, value: String, color: u32) -> Div {
         .flex()
         .justify_between()
         .gap(px(14.))
-        .text_size(px(12.))
-        .child(div().text_color(rgb(MUTED)).child(label.to_string()))
-        .child(div().font_weight(FontWeight::SEMIBOLD).text_color(rgb(color)).child(value))
+        .child(outlined(label.to_string(), 12.0, 0xd0d2da))
+        .child(outlined(value, 12.0, color))
 }
 
 fn mmss(secs: f64) -> String {
@@ -286,7 +387,7 @@ fn quick_stats(s: &Snapshot) -> AnyElement {
     // Rough targets: 7+ CS/min is strong, under 5 is low (not for supports/junglers).
     let cs_color = if cs_min >= 7.0 { ACCENT } else if cs_min < 5.0 { RED } else { TEXT };
     panel("Quick Stats")
-        .w(px(200.))
+        .w_full()
         .child(row("Game time", mmss(s.game.game_data.game_time), TEXT))
         .child(row("CS", format!("{} ({cs_min:.1}/min)", sc.creep_score), cs_color))
         .child(row("KDA", format!("{}/{}/{} ({kda:.2})", sc.kills, sc.deaths, sc.assists), if kda >= 3.0 { ACCENT } else { TEXT }))
@@ -297,10 +398,8 @@ fn quick_stats(s: &Snapshot) -> AnyElement {
 }
 
 /// The next five skill points from the recommended build.
-fn skill_order(s: &Snapshot, cx: &mut App) -> AnyElement {
-    let Some(b) = &s.build else {
-        return panel("Skill Order").child(div().text_size(px(11.)).text_color(rgb(MUTED)).child("Loading build…")).into_any_element();
-    };
+fn skill_order(s: &Snapshot, k: f32, cx: &mut App) -> AnyElement {
+    let Some(b) = &s.build else { return outlined("Loading build…".into(), 11.0 * k, MUTED) };
     let level = s.game.active_player.level as usize;
     let next: Vec<(usize, u32)> = b.skills.iter().copied().enumerate().skip(level).take(5).collect();
     if next.is_empty() {
@@ -316,53 +415,53 @@ fn skill_order(s: &Snapshot, cx: &mut App) -> AnyElement {
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(3.))
-                .child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(rgb(if first { ACCENT } else { MUTED })).child(skill_letter(*skill)))
+                .gap(px(2.0 * k))
+                .child(outlined(skill_letter(*skill).to_string(), 13.0 * k, if first { ACCENT } else { 0xd0d2da }))
                 .child(
                     div()
-                        .rounded(px(5.))
+                        .rounded(px(4.0 * k))
                         .border_2()
-                        .border_color(rgb(if first { ACCENT } else { 0x2a2a33 }))
-                        .when(!first, |d| d.opacity(0.55))
-                        .child(images::icon(icon.as_deref(), 34., cx)),
+                        .border_color(rgb(if first { ACCENT } else { 0x000000 }))
+                        .when(!first, |d| d.opacity(0.6))
+                        .child(images::icon(icon.as_deref(), 32.0 * k, cx)),
                 )
-                .child(div().text_size(px(10.)).text_color(rgb(MUTED)).child(format!("{}", lv + 1)))
+                .child(outlined(format!("{}", lv + 1), 10.0 * k, 0xd0d2da))
                 .into_any_element()
         })
         .collect();
-    panel("Skill Order").child(div().flex().justify_between().children(cells)).into_any_element()
+    div().flex().justify_between().children(cells).into_any_element()
 }
 
-/// Starting and core items from the recommended build; owned ones are ticked.
-fn item_build(s: &Snapshot, cx: &mut App) -> AnyElement {
-    let Some(b) = &s.build else {
-        return panel("Item Build").child(div().text_size(px(11.)).text_color(rgb(MUTED)).child("Loading build…")).into_any_element();
-    };
+/// Starting items in the first minutes, then the core build; owned ones are ticked.
+fn item_build(s: &Snapshot, k: f32, cx: &mut App) -> AnyElement {
+    let Some(b) = &s.build else { return outlined("Loading build…".into(), 11.0 * k, MUTED) };
     let owned: Vec<u32> = s.game.me().map(|m| m.items.iter().map(|i| i.item_id).collect()).unwrap_or_default();
     let icon = |id: u32, cx: &mut App| {
         let have = owned.contains(&id);
         div()
-            .rounded(px(5.))
+            .rounded(px(4.0 * k))
             .border_2()
-            .border_color(rgb(if have { ACCENT } else { 0x2a2a33 }))
-            .when(have, |d| d.opacity(0.6))
-            .child(images::icon(Some(&s.data.item_icon(id)), 30., cx))
+            .border_color(rgb(if have { ACCENT } else { 0x000000 }))
+            .when(have, |d| d.opacity(0.5))
+            .child(images::icon(Some(&s.data.item_icon(id)), 28.0 * k, cx))
             .into_any_element()
     };
-    let starter: Vec<AnyElement> = b.starter.iter().map(|&i| icon(i, cx)).collect();
-    let core: Vec<AnyElement> = b.items.iter().chain(b.boots.iter()).map(|&i| icon(i, cx)).collect();
     let early = s.game.game_data.game_time < 180.0;
-    panel(&format!("Item Build · {}", b.style))
-        .w(px(230.))
-        .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child("Starting Items"))
-        .child(div().flex().gap(px(4.)).when(!early, |d| d.opacity(0.5)).children(starter))
-        .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child("Core Items"))
-        .child(div().flex().flex_wrap().gap(px(4.)).children(core))
+    let ids: Vec<u32> = if early { b.starter.clone() } else { b.items.iter().chain(b.boots.iter()).copied().collect() };
+    let title = if early { format!("Start · {}", b.style) } else { format!("Core · {}", b.style) };
+    let icons: Vec<AnyElement> = ids.into_iter().map(|i| icon(i, cx)).collect();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(3.0 * k))
+        .child(outlined(title, 11.0 * k, ACCENT))
+        .child(div().flex().flex_wrap().gap(px(3.0 * k)).children(icons))
         .into_any_element()
 }
 
-/// Dragon and Baron timers from the game's own kill announcements.
-fn jungle_timers(s: &Snapshot) -> AnyElement {
+/// Dragon and Baron countdowns from the game's own kill announcements,
+/// placed on their pits in the minimap (nothing once they're up).
+fn jungle_timers(s: &Snapshot, hud: &Hud) -> Vec<(String, (f32, f32))> {
     let t = s.game.game_data.game_time;
     let (mine, theirs) = s.game.dragons();
     let soul = mine >= 4 || theirs >= 4;
@@ -374,15 +473,13 @@ fn jungle_timers(s: &Snapshot) -> AnyElement {
         Some(e) => e.time + 360.0,
         None => 1200.0,
     };
-    let status = |next: f64| if t >= next { ("Up".to_string(), ACCENT) } else { (mmss(next - t), TEXT) };
-    let (d, dc) = status(dragon_next);
-    let (b, bc) = status(baron_next);
-    panel("Jungle Timers")
-        .w(px(190.))
-        .child(row(if soul { "Elder Dragon" } else { "Dragon" }, d, dc))
-        .child(row("Baron Nashor", b, bc))
-        .child(row("Dragons", format!("{mine} – {theirs}"), TEXT))
-        .into_any_element()
+    let mut out = Vec::new();
+    for (next, pit) in [(dragon_next, DRAGON_PIT), (baron_next, BARON_PIT)] {
+        if t < next {
+            out.push((mmss(next - t), hud.map_point(pit.0, pit.1)));
+        }
+    }
+    out
 }
 
 /// Gold in each player's items ("realized gold"), lane by lane.

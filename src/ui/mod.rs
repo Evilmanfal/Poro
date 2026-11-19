@@ -212,6 +212,7 @@ impl AppView {
         };
         view.start_update_checks(cx);
         view.start_overlay_loop(cx);
+        view.start_tab_watch(cx);
         // The overlay is a window too, so closing the main window quits Poro.
         window.on_window_should_close(cx, |_, cx| {
             cx.quit();
