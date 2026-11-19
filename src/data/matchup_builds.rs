@@ -200,6 +200,11 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
     let mut groups: Vec<((String, u32), Vec<Entry>)> = Vec::new();
     for g in games {
         let (items, boots) = finished_items(g, &data.items);
+        // No finished item (a remake or an early surrender): nothing to
+        // learn from, and the build can't be named.
+        if items.is_empty() {
+            continue;
+        }
         let key = (build_style(&items, &data.items), g.rune.perk_0);
         let entry = Entry { game: g, items, boots };
         match groups.iter_mut().find(|(k, _)| *k == key) {
@@ -277,7 +282,7 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
         let boots = all_items.iter().copied().find(|i| data.items.get(i).is_some_and(|x| x.boots));
         let items: Vec<u32> = all_items.iter().copied().filter(|i| data.items.get(i).is_some_and(|x| x.legendary)).collect();
         let style = build_style(&items, &data.items);
-        if builds.iter().any(|m| m.style == style && m.keystone == runes.perks[0]) {
+        if items.is_empty() || style == "Unknown" || builds.iter().any(|m| m.style == style && m.keystone == runes.perks[0]) {
             continue;
         }
         let spells = match b.spell.build.as_slice() {
@@ -304,6 +309,14 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn games_without_finished_items_make_no_build() {
+        let data = super::super::ddragon::load().unwrap();
+        let games = super::all_games(56, 7).unwrap();
+        let s = super::summarize(&games, &data, &[], 3);
+        assert!(s.builds.iter().all(|b| !b.items.is_empty() && b.style != "Unknown"));
+    }
+
     #[test]
     fn live_matchup_builds() {
         let data = super::super::ddragon::load().unwrap();
