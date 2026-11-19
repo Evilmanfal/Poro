@@ -52,6 +52,11 @@ pub fn rune(data: &StaticData, id: u32, size: f32, cx: &mut App) -> AnyElement {
     tipped(images::round(data.rune_icon(id).as_deref(), size, cx), data.rune_tip(id))
 }
 
+/// A rune that wasn't picked: greyed out, still with its description.
+pub fn rune_dim(data: &StaticData, id: u32, size: f32, cx: &mut App) -> AnyElement {
+    tipped(images::dim(data.rune_icon(id).as_deref(), size, true, cx), data.rune_tip(id))
+}
+
 pub fn champ(data: &StaticData, key: u32, size: f32, round: bool, cx: &mut App) -> AnyElement {
     let url = data.champion_icon(key);
     let icon = if round { images::round(url.as_deref(), size, cx) } else { images::icon(url.as_deref(), size, cx) };

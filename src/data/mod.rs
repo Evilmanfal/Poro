@@ -9,6 +9,7 @@ pub mod ddragon;
 pub mod deeplol;
 pub mod lolalytics;
 pub mod matchup_builds;
+pub mod ugg;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;

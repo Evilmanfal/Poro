@@ -153,6 +153,13 @@ pub struct Skill {
     pub cost: Option<String>,
 }
 
+/// A rune tree (Precision, Domination, …) and its rows of rune ids.
+#[derive(Clone, Debug, Default)]
+pub struct RuneTree {
+    pub id: u32,
+    pub slots: Vec<Vec<u32>>,
+}
+
 /// Text for a hover tooltip.
 #[derive(Clone, Debug, Default)]
 pub struct Tip {
@@ -208,6 +215,8 @@ pub struct StaticData {
     by_key: HashMap<u32, usize>,
     /// Rune trees and runes, by id.
     pub runes: HashMap<u32, Rune>,
+    /// The five rune trees with their rows (keystones first), in game order.
+    pub rune_trees: Vec<RuneTree>,
     /// Summoner spells by numeric key.
     pub spells: HashMap<u32, SummonerSpell>,
     /// Items by id, with what kind of stats they give.
@@ -441,6 +450,10 @@ pub fn load() -> Result<StaticData> {
 
     let styles: Vec<RuneStyle> = get_json(&format!("{CDN}/{v}/data/en_US/runesReforged.json"), STATIC)?;
     let mut runes = HashMap::new();
+    let mut rune_trees = Vec::new();
+    for s in &styles {
+        rune_trees.push(RuneTree { id: s.id, slots: s.slots.iter().map(|sl| sl.runes.iter().map(|r| r.id).collect()).collect() });
+    }
     for s in styles {
         let desc = format!("{} rune tree", s.name);
         runes.insert(s.id, Rune { id: s.id, name: s.name, icon: format!("{CDN}/img/{}", s.icon), desc });
@@ -472,7 +485,7 @@ pub fn load() -> Result<StaticData> {
 
     let items = load_items(&v).unwrap_or_default();
 
-    Ok(StaticData { versions, champions, by_key, runes, spells, items })
+    Ok(StaticData { versions, champions, by_key, runes, rune_trees, spells, items })
 }
 
 fn load_items(v: &str) -> Result<HashMap<u32, ItemInfo>> {

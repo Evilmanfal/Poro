@@ -5,6 +5,7 @@ mod counters;
 mod games;
 mod matchup;
 mod theme;
+mod tierlist;
 mod overlay;
 mod settings_page;
 mod tips;
@@ -51,6 +52,7 @@ impl<T> Loadable<T> {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    TierList,
     Matchup,
     Counters,
     Settings,
@@ -130,6 +132,7 @@ pub struct AppView {
     pub toast: Option<(String, bool)>,
     toast_gen: u64,
     up: update::UpdateState,
+    tiers: tierlist::TierState,
     pub settings: crate::settings::Settings,
     ov: overlay::OverlayState,
 }
@@ -173,7 +176,7 @@ impl AppView {
             patch: 0,
             patch_menu: false,
             patch_menu_closed: None,
-            tab: Tab::Matchup,
+            tab: Tab::TierList,
             a: None,
             b: None,
             lane: Lane::Middle,
@@ -207,6 +210,7 @@ impl AppView {
             toast: None,
             toast_gen: 0,
             up: update::UpdateState::default(),
+            tiers: tierlist::TierState::default(),
             settings: crate::settings::load(),
             ov: overlay::OverlayState::default(),
         };
@@ -292,6 +296,7 @@ impl AppView {
             self.patch = i;
             self.reload_matchup(false, cx);
             self.reload_counters(cx);
+            self.reload_champion_page(cx);
         }
     }
 
@@ -810,6 +815,7 @@ impl AppView {
             .child(gpui::img(self.logo.clone()).size(px(30.)).flex_none())
             .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::BOLD).text_color(rgb(TEXT)).child("Poro"))
             .child(div().text_size(px(11.)).text_color(rgb(MUTED)).mr(px(10.)).child(format!("v{}", crate::update::current())))
+            .child(tab("Tier List", Tab::TierList, self, cx))
             .child(tab("Champion Matchup", Tab::Matchup, self, cx))
             .child(tab("Counters", Tab::Counters, self, cx))
             .child(tab("Settings", Tab::Settings, self, cx))
@@ -887,6 +893,7 @@ impl Render for AppView {
             div().p(px(24.)).text_color(rgb(MUTED)).child("Loading champion data…").into_any_element()
         } else {
             match self.tab {
+                Tab::TierList => self.render_tier_list(cx),
                 Tab::Matchup => self.render_matchup(window, cx),
                 Tab::Counters => self.render_counters(window, cx),
                 Tab::Settings => self.render_settings(cx),
@@ -924,6 +931,7 @@ impl Render for AppView {
             .child(
                 div()
                     .id(match self.tab {
+                        Tab::TierList => "body-tierlist",
                         Tab::Matchup => "body-matchup",
                         Tab::Counters => "body-counters",
                         Tab::Settings => "body-settings",

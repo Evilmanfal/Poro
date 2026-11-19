@@ -65,6 +65,16 @@ pub fn icon_rounded(url: Option<&str>, size: f32, radius: f32, cx: &mut App) -> 
     }
 }
 
+/// A greyed-out icon (an option that wasn't picked).
+pub fn dim(url: Option<&str>, size: f32, round: bool, cx: &mut App) -> AnyElement {
+    let s: Pixels = px(size);
+    let r = if round { px(size / 2.0) } else { px(4.0) };
+    match url.and_then(|u| get(u, cx)) {
+        Some(image) => img(image).size(s).flex_none().rounded(r).grayscale(true).opacity(0.3).into_any_element(),
+        None => div().size(s).flex_none().rounded(r).bg(rgb(0x2c2c34)).into_any_element(),
+    }
+}
+
 /// A round icon (champion portraits).
 pub fn round(url: Option<&str>, size: f32, cx: &mut App) -> AnyElement {
     icon_rounded(url, size, size / 2.0, cx)

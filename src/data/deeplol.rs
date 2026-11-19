@@ -107,8 +107,14 @@ pub struct BuildRune {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct BuildItems {
+    /// Core items in order.
     #[serde(default)]
     pub build: Vec<u32>,
+    /// The full purchase path (components too) and each step's cost.
+    #[serde(default)]
+    pub detail: Vec<u32>,
+    #[serde(default)]
+    pub detail_price: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -147,7 +153,7 @@ impl Build {
 
 /// The League client's stat shard rows, top to bottom (offense, flex,
 /// defense), as `/lol-perks/v1/styles` reports them.
-const SHARD_ROWS: [&[u32]; 3] = [&[5008, 5005, 5007], &[5008, 5010, 5001], &[5011, 5013, 5001]];
+pub const SHARD_ROWS: [&[u32]; 3] = [&[5008, 5005, 5007], &[5008, 5010, 5001], &[5011, 5013, 5001]];
 
 /// Puts deeplol's stat shards in the order the League client wants.
 /// deeplol lists them bottom-up (defense, flex, offense, like Riot's match
