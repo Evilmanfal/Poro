@@ -133,7 +133,9 @@ pub struct ScoreboardGeometry {
     pub below_kda: f32,
 }
 
-pub const SCOREBOARD: ScoreboardGeometry = ScoreboardGeometry { kda_x: 300.0, first_row_y: -175.0, row_h: 52.0, below_kda: 16.0 };
+// Measured on the live scoreboard at 1920×1080: the first row's K/D/A is
+// centred at (660, 349) and rows are 75 px apart; the right team mirrors it.
+pub const SCOREBOARD: ScoreboardGeometry = ScoreboardGeometry { kda_x: 300.0, first_row_y: -191.0, row_h: 75.0, below_kda: 12.0 };
 
 /// League's game.cfg.
 fn config_path() -> Option<PathBuf> {
