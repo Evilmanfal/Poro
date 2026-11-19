@@ -1,8 +1,6 @@
 //! The Tier List tab (Poro's main page): U.GG's tier list with role
-//! filters, and a champion page with deeplol's builds when a champion is
+//! filters, and a champion page with U.GG's builds when a champion is
 //! clicked.
-
-use std::collections::HashMap;
 
 use gpui::{div, prelude::*, px, AnyElement, Context, FontWeight, SharedString};
 
@@ -10,9 +8,9 @@ use super::theme::*;
 use super::tips;
 use super::{spawn_job, AppView, Loadable};
 use crate::data::ddragon::{Lane, StaticData};
-use crate::data::deeplol::{self, Build, LaneStats, SHARD_ROWS};
+use crate::data::deeplol::{order_shards, RunePage, SHARD_ROWS};
 use crate::data::matchup_builds::build_style;
-use crate::data::ugg::{self, TierEntry, TierList};
+use crate::data::ugg::{self, TierEntry, TierList, UggBuild};
 use crate::images;
 
 /// U.GG's tier colours.
@@ -60,7 +58,8 @@ pub struct TierState {
     pub role: Option<Lane>,
     /// The champion page being shown: (champion, lane).
     pub page: Option<(u32, Lane)>,
-    pub page_stats: Option<Loadable<HashMap<Lane, LaneStats>>>,
+    /// U.GG's builds for that champion and lane.
+    pub page_builds: Option<Loadable<Vec<UggBuild>>>,
     pub build: usize,
 }
 
@@ -99,18 +98,25 @@ impl AppView {
     fn open_champion_page(&mut self, champ: u32, lane: Lane, cx: &mut Context<Self>) {
         self.tiers.page = Some((champ, lane));
         self.tiers.build = 0;
+        self.tiers.page_builds = None;
         self.load_skills(champ, cx);
         self.reload_champion_page(cx);
     }
 
     pub(super) fn reload_champion_page(&mut self, cx: &mut Context<Self>) {
-        let Some((champ, _)) = self.tiers.page else { return };
-        let (patch, _) = self.deeplol_patch();
+        let Some((champ, lane)) = self.tiers.page else { return };
+        let patch = self.patch_label().to_string();
         let live = self.is_latest_patch();
-        self.tiers.page_stats = Some(Loadable::Loading);
-        spawn_job(cx, move || deeplol::champion(champ, &patch, live), move |this, r, _| {
-            if this.tiers.page.map(|p| p.0) == Some(champ) {
-                this.tiers.page_stats = Some(Loadable::from(r));
+        // On a background refresh keep the builds on screen until the new ones arrive.
+        if !matches!(self.tiers.page_builds, Some(Loadable::Ready(_))) {
+            self.tiers.page_builds = Some(Loadable::Loading);
+        }
+        spawn_job(cx, move || ugg::champion_builds(champ, lane, &patch, live), move |this, r, _| {
+            if this.tiers.page == Some((champ, lane)) {
+                let keep = r.is_err() && matches!(this.tiers.page_builds, Some(Loadable::Ready(_)));
+                if !keep {
+                    this.tiers.page_builds = Some(Loadable::from(r));
+                }
             }
         });
         cx.notify();
@@ -281,15 +287,23 @@ impl AppView {
     fn render_champion_page(&mut self, data: &StaticData, cx: &mut Context<Self>) -> AnyElement {
         let (champ, lane) = self.tiers.page.unwrap();
         let name = data.champion_name(champ);
-        let (dl_patch, _) = self.deeplol_patch();
-        let stats: Option<LaneStats> = self.tiers.page_stats.as_ref().and_then(|s| s.ready()).and_then(|m| m.get(&lane).cloned());
-        let loading = matches!(self.tiers.page_stats, Some(Loadable::Loading));
-        let ugg_tier = self
-            .tiers
-            .list
-            .as_ref()
-            .and_then(|l| l.ready())
-            .and_then(|l| l.entries.iter().find(|e| e.champion == champ && e.lane == lane).map(|e| e.tier()));
+        let list = self.tiers.list.as_ref().and_then(|l| l.ready());
+        let patch = list.map(|l| l.patch.clone()).unwrap_or_else(|| self.patch_label().to_string());
+        // The champion's U.GG stats and its rank in the role (as on the tier list).
+        let entry = list.and_then(|l| l.entries.iter().find(|e| e.champion == champ && e.lane == lane).cloned());
+        let rank = list.and_then(|l| {
+            let mut in_role: Vec<&TierEntry> =
+                l.entries.iter().filter(|e| e.lane == lane && e.pick_rate >= ugg::MIN_PICK_RATE).collect();
+            in_role.sort_by(|a, b| b.stdevs.total_cmp(&a.stdevs));
+            let pos = in_role.iter().position(|e| e.champion == champ)?;
+            Some((pos + 1, in_role.len()))
+        });
+        let builds: Vec<UggBuild> = self.tiers.page_builds.as_ref().and_then(|b| b.ready()).cloned().unwrap_or_default();
+        let loading = matches!(self.tiers.page_builds, Some(Loadable::Loading) | None);
+        let failed = match &self.tiers.page_builds {
+            Some(Loadable::Failed(e)) => Some(e.clone()),
+            _ => None,
+        };
 
         let back = button("tl-back", "← Tier List").on_click(cx.listener(|this, _, _, cx| {
             this.tiers.page = None;
@@ -322,32 +336,29 @@ impl AppView {
                     .into_any_element()
             })
             .collect();
-        let stat_row = match &stats {
-            Some(s) => div()
+        let stat_row = match &entry {
+            Some(e) => div()
                 .flex()
                 .gap(px(24.))
                 .p(px(12.))
                 .rounded(px(8.))
                 .border_1()
                 .border_color(rgb(BORDER))
-                .child(stat("Tier", s.champion_tier.map(|t| t.to_string()).unwrap_or("–".into())))
-                .child(stat(
-                    "Ranking",
-                    match (s.rank, s.lane_cnt_all) {
-                        (Some(r), Some(n)) => format!("{r} / {n}"),
-                        _ => "–".into(),
-                    },
-                ))
-                .child(stat("Win Rate", pct_frac(s.win_rate)))
-                .child(stat("Pick Rate", pct_frac(s.pick_rate)))
-                .child(stat("Ban Rate", pct_frac(s.ban_rate)))
-                .child(stat("Games", s.games.map(thousands).unwrap_or("–".into())))
-                .children(ugg_tier.map(|t| stat("U.GG Tier", t.to_string())))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child("Tier"))
+                        .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).text_color(rgb(tier_color(e.tier()))).child(e.tier())),
+                )
+                .child(stat("Ranking", rank.map(|(r, n)| format!("{r} / {n}")).unwrap_or("–".into())))
+                .child(stat("Win Rate", pct(e.win_rate)))
+                .child(stat("Pick Rate", pct(e.pick_rate)))
+                .child(stat("Ban Rate", pct(e.ban_rate)))
+                .child(stat("Games", thousands(e.games)))
                 .into_any_element(),
-            None => div()
-                .text_color(rgb(MUTED))
-                .child(if loading { "Loading deeplol's builds…".to_string() } else { format!("deeplol has no {} data for {name}.", lane.label()) })
-                .into_any_element(),
+            None => div().text_color(rgb(MUTED)).child(format!("No {} stats for {name} on this patch.", lane.label())).into_any_element(),
         };
         let header = card()
             .flex()
@@ -365,7 +376,7 @@ impl AppView {
                             .gap(px(10.))
                             .child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).child(name.clone()))
                             .child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(format!(
-                                "{} Build, Emerald+, Patch {dl_patch}",
+                                "{} Build, Emerald+, Patch {patch}",
                                 lane.label()
                             ))),
                     )
@@ -373,19 +384,17 @@ impl AppView {
                     .child(stat_row),
             );
 
-        let builds: Vec<Build> = stats.as_ref().map(|s| s.build_lst.clone()).unwrap_or_default();
         let selected = self.tiers.build.min(builds.len().saturating_sub(1));
         let tabs: Vec<AnyElement> = builds
             .iter()
             .enumerate()
-            .take(4)
             .map(|(i, b)| {
-                let items: Vec<u32> = b.item.build.iter().copied().filter(|i| data.items.get(i).is_some_and(|x| x.legendary)).collect();
-                let style = build_style(&items, &data.items);
-                let keystone = b.rune.main_build.get(1).copied().unwrap_or(0);
-                let first_item = items.first().copied();
+                let style = build_name(data, b);
+                let page = ugg_page(data, b);
+                let keystone = page.as_ref().map(|p| p.perks[0]).unwrap_or(0);
+                let first_item = b.core.iter().copied().find(|i| data.items.get(i).is_some_and(|x| x.legendary));
                 let active = i == selected;
-                let wr = b.win_rate * 100.0;
+                let wr = b.wins as f64 * 100.0 / b.games.max(1) as f64;
                 div()
                     .id(SharedString::from(format!("tl-build-{i}")))
                     .flex()
@@ -409,7 +418,11 @@ impl AppView {
                             .flex()
                             .flex_col()
                             .child(div().text_size(px(13.)).font_weight(FontWeight::BOLD).child(style))
-                            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(format!("{} games", thousands(b.games)))),
+                            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(format!(
+                                "{}{} games",
+                                if i == 0 { "Recommended · " } else { "" },
+                                thousands(b.games)
+                            ))),
                     )
                     .child(
                         div()
@@ -425,7 +438,22 @@ impl AppView {
                     .into_any_element()
             })
             .collect();
-        let panel = builds.get(selected).map(|b| self.render_build_panel(data, &name, lane, b, cx));
+        let status = if builds.is_empty() {
+            Some(
+                div()
+                    .text_color(rgb(MUTED))
+                    .child(match failed {
+                        Some(e) => format!("Couldn't load builds: {e}"),
+                        None if loading => "Loading builds…".to_string(),
+                        None => format!("No {} builds for {name}.", lane.label()),
+                    })
+                    .into_any_element(),
+            )
+        } else {
+            None
+        };
+        let total_games = builds.first().map(|b| b.games).unwrap_or(0);
+        let panel = builds.get(selected).map(|b| self.render_build_panel(data, &name, lane, b, total_games, cx));
 
         div()
             .flex()
@@ -435,21 +463,29 @@ impl AppView {
             .child(div().flex().child(back))
             .child(header)
             .child(div().flex().gap(px(6.)).children(tabs))
+            .children(status)
             .children(panel)
             .into_any_element()
     }
 
-    fn render_build_panel(&mut self, data: &StaticData, name: &str, lane: Lane, b: &Build, cx: &mut Context<Self>) -> AnyElement {
-        let items: Vec<u32> = b.item.build.iter().copied().filter(|i| data.items.get(i).is_some_and(|x| x.legendary)).collect();
-        let style = build_style(&items, &data.items);
-        let runes = self.rune_trees_view(data, b, cx);
+    fn render_build_panel(
+        &mut self,
+        data: &StaticData,
+        name: &str,
+        lane: Lane,
+        b: &UggBuild,
+        total_games: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let style = build_name(data, b);
+        let page = ugg_page(data, b);
+        let runes = page.as_ref().map(|p| self.rune_trees_view(data, p, cx)).unwrap_or_else(|| div().into_any_element());
 
-        let spells: Vec<AnyElement> = b.spell.build.iter().map(|&s| tips::spell(data, s, 36., cx)).collect();
+        let spells: Vec<AnyElement> = b.spells.iter().map(|&s| tips::spell(data, s, 36., cx)).collect();
+        let starter: Vec<AnyElement> = b.starter.iter().map(|&it| tips::item(data, it, 36., cx)).collect();
         let core: Vec<AnyElement> = b
-            .item
-            .build
+            .core
             .iter()
-            .take(5)
             .enumerate()
             .map(|(i, &it)| {
                 div()
@@ -469,46 +505,44 @@ impl AppView {
                     .into_any_element()
             })
             .collect();
-        let path: Vec<AnyElement> = b
-            .item
-            .detail
+        // The 4th, 5th and 6th item: each option with its win rate and games.
+        let options: Vec<AnyElement> = ["4th Item", "5th Item", "6th Item"]
             .iter()
-            .enumerate()
-            .map(|(i, &it)| {
-                let price = b.item.detail_price.get(i).copied();
-                let is_core = b.item.build.contains(&it);
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .when(i > 0, |d| d.child(div().text_color(rgb(MUTED)).child("›")))
-                    .child(
+            .zip(b.item_options.iter())
+            .map(|(title, opts)| {
+                let rows: Vec<AnyElement> = opts
+                    .iter()
+                    .take(3)
+                    .map(|o| {
+                        let wr = o.wins as f64 * 100.0 / o.games.max(1) as f64;
                         div()
                             .flex()
-                            .flex_col()
                             .items_center()
-                            .gap(px(2.))
+                            .gap(px(8.))
+                            .child(tips::item(data, o.item, 32., cx))
                             .child(
                                 div()
-                                    .rounded(px(5.))
-                                    .border_2()
-                                    .border_color(rgb(if is_core { ACCENT } else { 0x00000000 }))
-                                    .child(tips::item(data, it, 30., cx)),
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().text_size(px(12.)).font_weight(FontWeight::BOLD).text_color(rgb(wr_tier_color(wr))).child(format!("{wr:.1}% WR")))
+                                    .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(format!("{} games", thousands(o.games)))),
                             )
-                            .children(price.map(|p| {
-                                div()
-                                    .text_size(px(11.))
-                                    .when(is_core, |d| d.font_weight(FontWeight::BOLD))
-                                    .text_color(rgb(if is_core { TEXT } else { MUTED }))
-                                    .child(p.to_string())
-                            })),
-                    )
+                            .into_any_element()
+                    })
+                    .collect();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .min_w(px(120.))
+                    .child(div().text_size(px(12.)).text_color(rgb(MUTED)).font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
+                    .children(rows)
+                    .when(opts.is_empty(), |d| d.child(div().text_size(px(11.)).text_color(rgb(MUTED)).child("–")))
                     .into_any_element()
             })
             .collect();
         let max_order: Vec<AnyElement> = b
-            .skill
-            .build
+            .max_order
             .iter()
             .enumerate()
             .map(|(i, &sk)| {
@@ -521,9 +555,8 @@ impl AppView {
                     .into_any_element()
             })
             .collect();
-        let grid = skill_grid(&b.skill.detail);
-        let page = b.runes();
-        let spell_pair = match b.spell.build.as_slice() {
+        let grid = skill_grid(&b.skills);
+        let spell_pair = match b.spells.as_slice() {
             [a, c, ..] => Some((*a, *c)),
             _ => None,
         };
@@ -543,6 +576,8 @@ impl AppView {
                 .font_weight(FontWeight::BOLD)
                 .child(t.to_string())
         };
+        let wr = b.wins as f64 * 100.0 / b.games.max(1) as f64;
+        let share = b.games as f64 * 100.0 / total_games.max(1) as f64;
         card()
             .flex()
             .gap(px(28.))
@@ -554,13 +589,11 @@ impl AppView {
                     .items_center()
                     .gap(px(8.))
                     .child(tag(&format!("[{style}] {name} Build")))
-                    .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(format!(
-                        "Pick Rate {:.1}% ({}) | WR {:.1}% · {}",
-                        b.pick_rate * 100.0,
-                        thousands(b.games),
-                        b.win_rate * 100.0,
-                        lane.label()
-                    )))
+                    .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(if b.label == "Recommended" {
+                        format!("{} games | WR {wr:.1}% · {}", thousands(b.games), lane.label())
+                    } else {
+                        format!("{} games ({share:.0}% of the recommended build's) | WR {wr:.1}%", thousands(b.games))
+                    }))
                     .child(runes)
                     .children(apply),
             )
@@ -573,11 +606,20 @@ impl AppView {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .gap(px(28.))
                             .child(div().flex().flex_col().gap(px(8.)).child(tag("Spells")).child(div().flex().gap(px(6.)).children(spells)))
+                            .child(div().flex().flex_col().gap(px(8.)).child(tag("Starting Items")).child(div().flex().gap(px(6.)).children(starter)))
                             .child(div().flex().flex_col().gap(px(8.)).child(tag("Core Item Build Order")).child(div().flex().items_center().children(core))),
                     )
-                    .child(div().flex().flex_col().gap(px(8.)).child(tag("Core Item Build Path")).child(div().flex().flex_wrap().items_center().gap(px(2.)).children(path)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(tag("4th / 5th / 6th Item Options"))
+                            .child(div().flex().gap(px(28.)).children(options)),
+                    )
                     .child(
                         div()
                             .flex()
@@ -592,8 +634,7 @@ impl AppView {
 
     /// Both rune trees with every rune shown and the picked ones lit, like
     /// the game's rune page, plus the stat shards.
-    fn rune_trees_view(&mut self, data: &StaticData, b: &Build, cx: &mut Context<Self>) -> AnyElement {
-        let Some(page) = b.runes() else { return div().into_any_element() };
+    fn rune_trees_view(&mut self, data: &StaticData, page: &RunePage, cx: &mut Context<Self>) -> AnyElement {
         let picked = |id: u32| page.perks.contains(&id) || id == page.primary_style || id == page.sub_style;
         let rune = |id: u32, size: f32, cx: &mut Context<Self>| {
             if picked(id) {
@@ -678,4 +719,35 @@ fn skill_grid(levels: &[u32]) -> AnyElement {
         })
         .collect();
     div().flex().flex_col().gap(px(3.)).children(rows).into_any_element()
+}
+
+/// The build's name: "AP", "Lethality", … (from its core items) or U.GG's style.
+fn build_name(data: &StaticData, b: &UggBuild) -> String {
+    if b.label != "Recommended" {
+        return b.label.clone();
+    }
+    let items: Vec<u32> = b.core.iter().copied().filter(|i| data.items.get(i).is_some_and(|x| x.legendary)).collect();
+    build_style(&items, &data.items)
+}
+
+/// U.GG lists a build's six runes in no particular order; the League client
+/// (and the rune tree view) wants keystone, the primary tree's rows, then
+/// the secondary tree's rows, then the shards top to bottom.
+fn ugg_page(data: &StaticData, b: &UggBuild) -> Option<RunePage> {
+    let row_of = |tree: u32, id: u32| -> Option<usize> {
+        data.rune_trees.iter().find(|t| t.id == tree)?.slots.iter().position(|slot| slot.contains(&id))
+    };
+    let mut primary: Vec<(usize, u32)> = b.perks.iter().filter_map(|&id| row_of(b.primary_style, id).map(|r| (r, id))).collect();
+    let mut secondary: Vec<(usize, u32)> = b.perks.iter().filter_map(|&id| row_of(b.sub_style, id).map(|r| (r, id))).collect();
+    primary.sort();
+    secondary.sort();
+    if primary.len() != 4 || secondary.len() != 2 || b.shards.len() != 3 {
+        return None;
+    }
+    let shards = order_shards([b.shards[0], b.shards[1], b.shards[2]]);
+    Some(RunePage {
+        primary_style: b.primary_style,
+        sub_style: b.sub_style,
+        perks: [primary[0].1, primary[1].1, primary[2].1, primary[3].1, secondary[0].1, secondary[1].1, shards[0], shards[1], shards[2]],
+    })
 }

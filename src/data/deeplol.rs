@@ -110,11 +110,6 @@ pub struct BuildItems {
     /// Core items in order.
     #[serde(default)]
     pub build: Vec<u32>,
-    /// The full purchase path (components too) and each step's cost.
-    #[serde(default)]
-    pub detail: Vec<u32>,
-    #[serde(default)]
-    pub detail_price: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

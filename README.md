@@ -5,8 +5,8 @@ no installer, no account.
 
 ## Features
 - **Tier List** (main page): U.GG's live tier list (S+, S, A) with All / Top / Jungle / Mid / ADC / Support
-  filters. Click a champion for its builds: deeplol's popular builds with full rune trees, spells, core item
-  order, build path with prices and skill order.
+  filters. Click a champion for U.GG's builds (recommended plus AP / AD / Tank / … styles): full rune trees,
+  spells, starting items, core item order, 4th / 5th / 6th item options with win rates, and skill order.
 - **Champion Matchup**: pick two champions for the head-to-head win rate, level 1–6 advantage and tips,
   Weak Against (from lolalytics), up to three builds for that exact matchup taken from real games (named AP,
   AD, Lethality, Bruiser, …), and the matchup's pro and high-elo games with lane and ALL / OTP / PRO filters.
@@ -26,7 +26,7 @@ Grab `poro.exe` from the [latest release](https://github.com/Evilmanfal/Poro/rel
 It's portable; keep it anywhere. Settings and a data cache live in `%LOCALAPPDATA%\Poro`.
 
 ## Data sources
-- **U.GG** (tier list), **deeplol.gg** (champion stats, builds, matchups, games) and **lolalytics.com**
+- **U.GG** (tier list and champion builds), **deeplol.gg** (Champion Matchup: stats, builds, games) and **lolalytics.com**
   (counters) have no public API. Poro reads the same JSON their own websites load. These endpoints are
   unofficial and can change without notice. Responses are cached, so if a site is down Poro shows the last
   good copy.

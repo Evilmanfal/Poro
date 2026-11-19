@@ -70,7 +70,9 @@ fn lane_of(role: &str) -> Option<Lane> {
 }
 
 /// U.GG's tier list for `patch` ("16.23"), falling back to its newest patch.
-pub fn tier_list(patch: &str, live: bool) -> Result<TierList> {
+/// U.GG's key for `patch` ("16.23" -> "16_23", or its newest patch if it
+/// has no data for that one) and the data-format version of `api` there.
+fn patch_key(patch: &str, api: &str) -> Result<(String, String)> {
     let versions: Value =
         get_json("https://static.bigbrain.gg/assets/lol/riot_patch_update/prod/ugg/ugg-api-versions.json", LIVE)?;
     let wanted = patch.replace('.', "_");
@@ -82,7 +84,12 @@ pub fn tier_list(patch: &str, live: bool) -> Result<TierList> {
         keys.sort_by_key(|k| k.split('_').map(|x| x.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>());
         keys.last().map(|k| k.to_string()).ok_or_else(|| anyhow!("U.GG lists no patches"))?
     };
-    let api = versions[&key]["champion_ranking"].as_str().unwrap_or("1.5.0").to_string();
+    let version = versions[&key][api].as_str().unwrap_or("1.5.0").to_string();
+    Ok((key, version))
+}
+
+pub fn tier_list(patch: &str, live: bool) -> Result<TierList> {
+    let (key, api) = patch_key(patch, "champion_ranking")?;
     let url = format!("https://stats2.u.gg/lol/1.5/champion_ranking/world/{key}/ranked_solo_5x5/emerald_plus/{api}.json");
     let d: Value = get_json(&url, if live { LIVE } else { STATIC })?;
 
@@ -149,6 +156,23 @@ pub fn tier_list(patch: &str, live: bool) -> Result<TierList> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn live_champion_builds() {
+        let b = super::champion_builds(56, super::Lane::Jungle, "16.23", true).unwrap();
+        for x in &b {
+            println!(
+                "{} {} games, core {:?}, 4th {:?}, 5th {:?}, 6th {:?}",
+                x.label,
+                x.games,
+                x.core,
+                x.item_options[0].iter().map(|o| o.item).collect::<Vec<_>>(),
+                x.item_options[1].iter().map(|o| o.item).collect::<Vec<_>>(),
+                x.item_options[2].iter().map(|o| o.item).collect::<Vec<_>>()
+            );
+        }
+        assert!(!b.is_empty());
+    }
+
+    #[test]
     fn live_tier_list() {
         let t = super::tier_list("16.23", true).unwrap();
         let top: Vec<String> = t
@@ -161,4 +185,146 @@ mod tests {
         println!("patch {} {} entries\n{}", t.patch, t.entries.len(), top.join("\n"));
         assert!(t.entries.len() > 100);
     }
+}
+
+// ---- Champion builds (U.GG's build page: overview files) ----
+
+/// One option for the 4th/5th/6th item: (item, wins, games).
+#[derive(Clone, Debug)]
+pub struct ItemOption {
+    pub item: u32,
+    pub wins: u64,
+    pub games: u64,
+}
+
+/// A build from U.GG's champion page.
+#[derive(Clone, Debug)]
+pub struct UggBuild {
+    /// "Recommended", or the build style of a style-specific page ("AP", "Tank", …).
+    pub label: String,
+    pub games: u64,
+    pub wins: u64,
+    pub primary_style: u32,
+    pub sub_style: u32,
+    /// The six runes as U.GG lists them (any order) and the three shards.
+    pub perks: Vec<u32>,
+    pub shards: Vec<u32>,
+    pub spells: Vec<u32>,
+    pub starter: Vec<u32>,
+    pub core: Vec<u32>,
+    /// Options for the 4th, 5th and 6th item, most played first.
+    pub item_options: [Vec<ItemOption>; 3],
+    /// Level 1..18 skill points (1 = Q .. 4 = R) and the max order.
+    pub skills: Vec<u32>,
+    pub max_order: Vec<u32>,
+}
+
+/// U.GG's role numbers.
+fn role_id(lane: Lane) -> &'static str {
+    match lane {
+        Lane::Top => "4",
+        Lane::Jungle => "1",
+        Lane::Middle => "5",
+        Lane::Bottom => "3",
+        Lane::Support => "2",
+    }
+}
+
+/// World (region 12), Emerald+ (rank 17), as the tier list uses.
+const WORLD: &str = "12";
+const EMERALD_PLUS: &str = "17";
+
+fn skill_id(letter: &str) -> u32 {
+    match letter {
+        "Q" => 1,
+        "W" => 2,
+        "E" => 3,
+        "R" => 4,
+        _ => 0,
+    }
+}
+
+fn ids(v: &Value) -> Vec<u32> {
+    v.as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32).or_else(|| x.as_str()?.parse().ok())).collect())
+        .unwrap_or_default()
+}
+
+/// Parses one champion/role entry of an overview file.
+fn parse_build(entry: &Value, label: &str) -> Option<UggBuild> {
+    let d = entry.get(0)?;
+    let runes = d.get(0)?;
+    let opts = d.get(5);
+    let option_list = |i: usize| -> Vec<ItemOption> {
+        let mut v: Vec<ItemOption> = opts
+            .and_then(|o| o.get(i))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| {
+                        Some(ItemOption {
+                            item: x.get(0)?.as_u64()? as u32,
+                            wins: x.get(1)?.as_u64()?,
+                            games: x.get(2)?.as_u64()?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort_by(|a, b| b.games.cmp(&a.games));
+        v
+    };
+    let skills = d.get(4)?;
+    let totals = d.get(6)?;
+    Some(UggBuild {
+        label: label.to_string(),
+        wins: totals.get(0)?.as_u64()?,
+        games: totals.get(1)?.as_u64()?,
+        primary_style: runes.get(2)?.as_u64()? as u32,
+        sub_style: runes.get(3)?.as_u64()? as u32,
+        perks: ids(runes.get(4)?),
+        shards: d.get(8).and_then(|x| x.get(2)).map(ids).unwrap_or_default(),
+        spells: ids(d.get(1)?.get(2)?),
+        starter: ids(d.get(2)?.get(2)?),
+        core: ids(d.get(3)?.get(2)?),
+        item_options: [option_list(0), option_list(1), option_list(2)],
+        skills: skills.get(2)?.as_array()?.iter().filter_map(|x| x.as_str()).map(skill_id).collect(),
+        max_order: skills.get(3)?.as_str()?.chars().map(|c| skill_id(&c.to_string())).collect(),
+    })
+}
+
+/// U.GG's builds for `champ` in `lane`: its recommended build plus each
+/// build style it has enough games of (AP, AD, Tank, …), most played first.
+pub fn champion_builds(champ: u32, lane: Lane, patch: &str, live: bool) -> Result<Vec<UggBuild>> {
+    let (key, api) = patch_key(patch, "overview")?;
+    let fresh = if live { LIVE } else { STATIC };
+    let load = |page: &str| -> Option<Value> {
+        get_json(&format!("https://stats2.u.gg/lol/1.5/{page}/{key}/ranked_solo_5x5/{champ}/{api}.json"), fresh).ok()
+    };
+    let entry = |v: &Value| v.get(WORLD)?.get(EMERALD_PLUS)?.get(role_id(lane)).cloned();
+    let main = load("overview").as_ref().and_then(entry).and_then(|e| parse_build(&e, "Recommended"));
+    let Some(main) = main else {
+        return Err(anyhow!("U.GG has no {} build for this champion", lane.label()));
+    };
+    let min_games = (main.games / 20).max(50);
+    let pages = [
+        ("ad-overview", "AD"),
+        ("ap-overview", "AP"),
+        ("tank-overview", "Tank"),
+        ("lethality-overview", "Lethality"),
+        ("crit-overview", "Crit"),
+        ("onhit-overview", "On-hit"),
+    ];
+    let mut styles: Vec<UggBuild> = std::thread::scope(|s| {
+        let handles: Vec<_> = pages
+            .iter()
+            .map(|(page, label)| s.spawn(move || load(page).as_ref().and_then(entry).and_then(|e| parse_build(&e, label))))
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok().flatten()).collect()
+    });
+    styles.retain(|b| b.games >= min_games && b.core != main.core);
+    styles.sort_by(|a, b| b.games.cmp(&a.games));
+    let mut out = vec![main];
+    out.extend(styles.into_iter().take(3));
+    Ok(out)
 }
