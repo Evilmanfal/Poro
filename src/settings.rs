@@ -15,13 +15,12 @@ pub struct Overlays {
     pub quick_stats: bool,
     pub skill_order: bool,
     pub item_build: bool,
-    pub jungle_timers: bool,
     pub lane_gold: bool,
 }
 
 impl Overlays {
     pub fn any(&self) -> bool {
-        self.quick_stats || self.skill_order || self.item_build || self.jungle_timers || self.lane_gold
+        self.quick_stats || self.skill_order || self.item_build || self.lane_gold
     }
 }
 

@@ -1,8 +1,7 @@
 //! The running game's live data, from League's official Live Client Data API
 //! (https://127.0.0.1:2999/liveclientdata/allgamedata, served by the game
 //! itself while a match is on). Only things the player can already see in
-//! the game: their own stats, the scoreboard (champions, items, KDA, CS) and
-//! the global objective announcements.
+//! the game: their own stats, the scoreboard (champions, items, KDA, CS).
 
 use std::time::Duration;
 
@@ -16,8 +15,6 @@ pub struct GameData {
     pub active_player: ActivePlayer,
     #[serde(default)]
     pub all_players: Vec<Player>,
-    #[serde(default)]
-    pub events: Events,
     #[serde(default)]
     pub game_data: GameInfo,
 }
@@ -87,24 +84,6 @@ pub struct Scores {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
-pub struct Events {
-    #[serde(rename = "Events", default)]
-    pub events: Vec<Event>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Event {
-    #[serde(rename = "EventName", default)]
-    pub name: String,
-    #[serde(rename = "EventTime", default)]
-    pub time: f64,
-    #[serde(rename = "KillerName", default)]
-    pub killer: String,
-    #[serde(rename = "DragonType", default)]
-    pub dragon_type: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct GameInfo {
@@ -151,13 +130,6 @@ impl GameData {
         self.all_players.iter().find(|p| p.is(&self.active_player))
     }
 
-    fn team_of(&self, name: &str) -> Option<&str> {
-        self.all_players
-            .iter()
-            .find(|p| p.riot_id == name || p.summoner_name == name || p.riot_id.split('#').next() == Some(name))
-            .map(|p| p.team.as_str())
-    }
-
     /// The five lanes paired up: (lane label, ally, enemy). Uses positions
     /// when the game reports them, otherwise scoreboard order.
     pub fn lanes(&self) -> Vec<(&'static str, Option<&Player>, Option<&Player>)> {
@@ -196,23 +168,5 @@ impl GameData {
     pub fn team_kills(&self) -> u32 {
         let Some(me) = self.me() else { return 0 };
         self.all_players.iter().filter(|p| p.team == me.team).map(|p| p.scores.kills).sum()
-    }
-
-    /// Dragons killed so far by each side: (mine, theirs).
-    pub fn dragons(&self) -> (u32, u32) {
-        let Some(me) = self.me() else { return (0, 0) };
-        let mut out = (0, 0);
-        for e in self.events.events.iter().filter(|e| e.name == "DragonKill" && e.dragon_type != "Elder") {
-            if self.team_of(&e.killer) == Some(me.team.as_str()) {
-                out.0 += 1;
-            } else {
-                out.1 += 1;
-            }
-        }
-        out
-    }
-
-    pub fn last_event(&self, names: &[&str]) -> Option<&Event> {
-        self.events.events.iter().rev().find(|e| names.contains(&e.name.as_str()))
     }
 }

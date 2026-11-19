@@ -84,20 +84,6 @@ impl Hud {
         Rect { x, y: self.height - margin_y - side, w: side, h: side }
     }
 
-    /// The minimap's map area (inside the frame).
-    pub fn map_area(&self) -> Rect {
-        let m = self.minimap();
-        let pad = m.w * 0.03;
-        Rect { x: m.x + pad, y: m.y + pad, w: m.w - 2.0 * pad, h: m.h - 2.0 * pad }
-    }
-
-    /// Screen position of a Summoner's Rift map coordinate on the minimap.
-    pub fn map_point(&self, world_x: f32, world_y: f32) -> (f32, f32) {
-        const MAP: f32 = 14870.0;
-        let a = self.map_area();
-        (a.x + world_x / MAP * a.w, a.y + a.h - world_y / MAP * a.h)
-    }
-
     /// The left edge of the bottom-center HUD (the stats panel left of the
     /// champion portrait) and the HUD's bottom.
     pub fn hud_left(&self) -> (f32, f32) {
@@ -152,7 +138,3 @@ fn config_path() -> Option<PathBuf> {
     let p = dir.join("Config").join("game.cfg");
     p.exists().then_some(p)
 }
-
-/// Summoner's Rift objective pits (map coordinates).
-pub const DRAGON_PIT: (f32, f32) = (9866.0, 4414.0);
-pub const BARON_PIT: (f32, f32) = (5007.0, 10471.0);

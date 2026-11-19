@@ -1,5 +1,5 @@
 //! In-game overlays (toggled in Settings): Quick Stats, Skill Order, Item
-//! Build, Jungle Timers and Lane Gold Difference. They're drawn on one
+//! Build and Lane Gold Difference. They're drawn on one
 //! transparent, click-through window laid over the League game window, and
 //! only while the game is in front. Data comes from the game's Live Client
 //! Data API (see `crate::live`) and Poro's matchup builds.
@@ -19,7 +19,7 @@ use super::theme::*;
 use super::AppView;
 use crate::data::ddragon::{Lane, Skill, StaticData};
 use crate::data::{deeplol, matchup_builds};
-use crate::hud::{Hud, BARON_PIT, DRAGON_PIT};
+use crate::hud::Hud;
 use crate::live::{self, GameData, Player};
 use crate::settings::Overlays;
 use crate::{images, win};
@@ -200,7 +200,7 @@ impl AppView {
         let game = self.ov.live.clone()?;
         let mut on = self.settings.overlays;
         if self.ov.previewing() {
-            on = Overlays { quick_stats: true, skill_order: true, item_build: true, jungle_timers: true, lane_gold: true };
+            on = Overlays { quick_stats: true, skill_order: true, item_build: true, lane_gold: true };
         }
         let my_key = game.me().and_then(|m| data.champion_by_id(m.champion_id())).map(|c| c.key);
         let skills = my_key.and_then(|k| self.skills.get(&k).cloned()).unwrap_or_default();
@@ -303,20 +303,6 @@ impl Render for OverlayView {
                     .bottom(px(h - (m.y / sf) + 6.0 * s))
                     .child(item_build(&snap, s, cx)),
             );
-        }
-        if snap.on.jungle_timers {
-            for (label, (x, y)) in jungle_timers(&snap, &hud) {
-                root = root.child(
-                    div()
-                        .absolute()
-                        .left(px(x / sf - 26.0 * s))
-                        .top(px(y / sf - 9.0 * s))
-                        .w(px(52.0 * s))
-                        .flex()
-                        .justify_center()
-                        .child(outlined(label, 13.0 * s, GOLD)),
-                );
-            }
         }
         if snap.on.quick_stats {
             root = root.child(div().absolute().top(px(h * 0.16)).left(px(w - 236.0)).w(px(220.0)).child(quick_stats(&snap)));
@@ -471,29 +457,6 @@ fn item_build(s: &Snapshot, k: f32, cx: &mut App) -> AnyElement {
         .into_any_element()
 }
 
-/// Dragon and Baron countdowns from the game's own kill announcements,
-/// placed on their pits in the minimap (nothing once they're up).
-fn jungle_timers(s: &Snapshot, hud: &Hud) -> Vec<(String, (f32, f32))> {
-    let t = s.game.game_data.game_time;
-    let (mine, theirs) = s.game.dragons();
-    let soul = mine >= 4 || theirs >= 4;
-    let dragon_next = match s.game.last_event(&["DragonKill"]) {
-        Some(e) => e.time + if soul { 360.0 } else { 300.0 },
-        None => 300.0,
-    };
-    let baron_next = match s.game.last_event(&["BaronKill"]) {
-        Some(e) => e.time + 360.0,
-        None => 1200.0,
-    };
-    let mut out = Vec::new();
-    for (next, pit) in [(dragon_next, DRAGON_PIT), (baron_next, BARON_PIT)] {
-        if t < next {
-            out.push((mmss(next - t), hud.map_point(pit.0, pit.1)));
-        }
-    }
-    out
-}
-
 /// Gold in each player's items ("realized gold"): for every player, the
 /// difference to their lane opponent, at their row on the scoreboard.
 fn lane_gold(s: &Snapshot, hud: &Hud) -> Vec<(f32, f32, i64)> {
@@ -568,9 +531,6 @@ fn demo_game() -> GameData {
     GameData {
         active_player: ActivePlayer { riot_id: "You#DEMO".into(), summoner_name: "You".into(), level: 9, current_gold: 1240.0 },
         all_players,
-        events: Events {
-            events: vec![Event { name: "DragonKill".into(), time: 610.0, killer: "Ally2#DEMO".into(), dragon_type: "Fire".into() }],
-        },
         game_data: GameInfo { game_mode: "CLASSIC".into(), game_time: 840.0, map_number: 11 },
     }
 }

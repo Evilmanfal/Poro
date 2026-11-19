@@ -9,7 +9,7 @@ use crate::settings::Overlays;
 
 type Getter = fn(&mut Overlays) -> &mut bool;
 
-const OVERLAYS: [(&str, &str, Getter); 5] = [
+const OVERLAYS: [(&str, &str, Getter); 4] = [
     (
         "Quick Stats",
         "Display settings for live stats overlay. Your CS, CS per minute, KDA, kill participation, vision score and gold, updated live through the game.",
@@ -24,11 +24,6 @@ const OVERLAYS: [(&str, &str, Getter); 5] = [
         "Item Build",
         "Display settings for item build overlay. Starting and core items from the recommended build for your matchup; items you own are ticked off.",
         |o| &mut o.item_build,
-    ),
-    (
-        "Jungle Timers",
-        "Display settings for Jungle Timers overlay. Dragon (and Elder) and Baron Nashor respawn timers from the game's kill announcements.",
-        |o| &mut o.jungle_timers,
     ),
     (
         "Lane Gold Difference",
