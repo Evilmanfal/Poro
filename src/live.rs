@@ -166,7 +166,9 @@ impl GameData {
         let theirs: Vec<&Player> = self.all_players.iter().filter(|p| p.team != me.team).collect();
         const LANES: [(&str, &str); 5] =
             [("TOP", "TOP"), ("JUNGLE", "JNG"), ("MIDDLE", "MID"), ("BOTTOM", "BOT"), ("UTILITY", "SUP")];
-        let have_positions = self.all_players.iter().all(|p| !p.position.is_empty());
+        // Practice Tool and some modes report "NONE": use scoreboard order then.
+        let known = |p: &Player| !p.position.is_empty() && p.position != "NONE";
+        let have_positions = self.all_players.iter().all(known);
         LANES
             .iter()
             .enumerate()
