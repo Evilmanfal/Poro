@@ -151,7 +151,7 @@ impl AppView {
                         format!("{name} Counters")
                     }))
                     .child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(format!(
-                        "{name} {} vs {} counters on patch {patch} · lolalytics.com, ranked solo queue, all regions, Emerald+. \
+                        "{name} {} vs {} counters on patch {patch}. \
                          Δ1 = win rate difference vs normal; Δ2 = also adjusted for the enemy's own win rate.",
                         self.c_lane.label(),
                         self.c_lane.label()

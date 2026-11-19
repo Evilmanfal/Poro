@@ -79,6 +79,9 @@ pub struct AppView {
     /// The last 6 patches, newest first ("16.23").
     pub patches: Vec<String>,
     pub patch: usize,
+    /// The patch dropdown is open.
+    patch_menu: bool,
+    patch_menu_closed: Option<std::time::Instant>,
     pub tab: Tab,
 
     // Champion Matchup
@@ -163,6 +166,8 @@ impl AppView {
             dl_versions: None,
             patches: Vec::new(),
             patch: 0,
+            patch_menu: false,
+            patch_menu_closed: None,
             tab: Tab::Matchup,
             a: None,
             b: None,
@@ -666,26 +671,92 @@ impl AppView {
                 }))
                 .child(label)
         };
-        let patches = self
-            .patches
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let active = i == self.patch;
+        // Patch picker: one button that opens a list.
+        let label_of = |i: usize, p: &str| if i == 0 { format!("{p} (live)") } else { p.to_string() };
+        let current = label_of(self.patch, self.patch_label());
+        let open = self.patch_menu;
+        let items: Vec<AnyElement> = if open {
+            self.patches
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    let active = i == self.patch;
+                    div()
+                        .id(SharedString::from(format!("patch-{p}")))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .rounded(px(5.))
+                        .text_size(px(13.))
+                        .cursor_pointer()
+                        .when(active, |d| d.text_color(rgb(ACCENT)).bg(rgba(0x37c8ab22)))
+                        .when(!active, |d| d.text_color(rgb(TEXT)).hover(|s| s.bg(rgb(BORDER))))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.patch_menu = false;
+                            this.set_patch(i, cx);
+                            cx.notify();
+                        }))
+                        .child(label_of(i, p))
+                        .into_any_element()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let patch_picker = div()
+            .relative()
+            .child(
                 div()
-                    .id(SharedString::from(format!("patch-{p}")))
-                    .px(px(9.))
-                    .py(px(4.))
-                    .rounded(px(5.))
+                    .id("patch-picker")
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .py(px(5.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(rgb(if open { ACCENT } else { BORDER }))
                     .text_size(px(12.))
                     .cursor_pointer()
-                    .border_1()
-                    .when(active, |d| d.border_color(rgb(ACCENT)).text_color(rgb(ACCENT)).bg(rgba(0x37c8ab22)))
-                    .when(!active, |d| d.border_color(rgb(BORDER)).text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_patch(i, cx)))
-                    .child(if i == 0 { format!("{p} (live)") } else { p.clone() })
-            })
-            .collect::<Vec<_>>();
+                    .hover(|s| s.bg(rgb(PANEL_2)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        // The same click already closed the open menu.
+                        let just_closed = this.patch_menu_closed.is_some_and(|t| t.elapsed() < Duration::from_millis(400));
+                        this.patch_menu = !this.patch_menu && !just_closed;
+                        cx.notify();
+                    }))
+                    .child(div().text_color(rgb(MUTED)).child("Patch"))
+                    .child(div().text_color(rgb(ACCENT)).font_weight(gpui::FontWeight::SEMIBOLD).child(current))
+                    .child(div().text_color(rgb(MUTED)).child(if open { "▴" } else { "▾" })),
+            )
+            .when(open, |d| {
+                d.child(
+                    gpui::deferred(
+                        div()
+                            .id("patch-menu")
+                            .absolute()
+                            .top(px(34.))
+                            .right_0()
+                            .w(px(150.))
+                            .p(px(4.))
+                            .rounded(px(8.))
+                            .bg(rgb(PANEL_2))
+                            .border_1()
+                            .border_color(rgb(BORDER))
+                            .shadow_lg()
+                            .occlude()
+                            .flex()
+                            .flex_col()
+                            // Clicking anywhere else closes it.
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                this.patch_menu = false;
+                                this.patch_menu_closed = Some(std::time::Instant::now());
+                                cx.notify();
+                            }))
+                            .children(items),
+                    )
+                    .with_priority(2),
+                )
+            });
 
         let (dot, label) = match &self.client {
             ClientStatus::NotRunning => (MUTED, "League client not running".to_string()),
@@ -724,8 +795,7 @@ impl AppView {
             .child(tab("Champion Matchup", Tab::Matchup, self, cx))
             .child(tab("Counters", Tab::Counters, self, cx))
             .child(div().flex_1())
-            .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child("Patch"))
-            .children(patches)
+            .child(patch_picker)
             .child(div().w(px(10.)))
             .children(update_pill)
             .child(
