@@ -21,6 +21,7 @@ pub struct GameData {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ActivePlayer {
     #[serde(default)]
     pub riot_id: String,
@@ -70,6 +71,7 @@ pub struct Item {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct Scores {
     #[serde(default)]
     pub kills: u32,
@@ -162,11 +164,5 @@ impl GameData {
     pub fn opponent(&self) -> Option<&Player> {
         let me = self.me()?;
         self.lanes().into_iter().find(|(_, a, _)| a.is_some_and(|a| std::ptr::eq(a, me))).and_then(|(_, _, e)| e)
-    }
-
-    /// Kills, deaths, assists summed for my team (for kill participation).
-    pub fn team_kills(&self) -> u32 {
-        let Some(me) = self.me() else { return 0 };
-        self.all_players.iter().filter(|p| p.team == me.team).map(|p| p.scores.kills).sum()
     }
 }

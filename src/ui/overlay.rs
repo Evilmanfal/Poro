@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, AnyElement, App, Bounds, Context, Div, FontWeight, Point, Size, Window,
+    div, prelude::*, px, AnyElement, App, Bounds, Context, FontWeight, Point, Size, Window,
     WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -137,6 +137,9 @@ impl AppView {
             self.open_overlay_window(cx);
         }
         let Some((handle, hwnd)) = self.ov.window else { return };
+        if rect != self.ov.placed && std::env::var_os("PORO_DEBUG").is_some() {
+            eprintln!("overlay: place {:?} -> {:?} (preview {}, live {})", self.ov.placed, rect, self.ov.previewing(), self.ov.live.is_some());
+        }
         if rect != self.ov.placed {
             win::place(hwnd, rect);
             let was_hidden = self.ov.placed.is_none();
@@ -305,7 +308,10 @@ impl Render for OverlayView {
             );
         }
         if snap.on.quick_stats {
-            root = root.child(div().absolute().top(px(h * 0.16)).left(px(w - 236.0)).w(px(220.0)).child(quick_stats(&snap)));
+            let qw = 214.0 * s;
+            root = root.child(
+                div().absolute().top(px(34.0 * s)).left(px(w - qw - 16.0 * s)).w(px(qw)).child(quick_stats(&snap, s, cx)),
+            );
         }
         if snap.on.lane_gold && snap.tab {
             // Under each player's K/D/A: coin, difference, arrow (like U.GG).
@@ -357,49 +363,102 @@ fn outlined(text: String, size: f32, color: u32) -> AnyElement {
         .into_any_element()
 }
 
-fn panel(title: &str) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .text_color(rgb(TEXT))
-        .child(outlined(title.to_string(), 12.0, ACCENT))
-}
-
-fn row(label: &str, value: String, color: u32) -> Div {
-    div()
-        .flex()
-        .justify_between()
-        .gap(px(14.))
-        .child(outlined(label.to_string(), 12.0, 0xd0d2da))
-        .child(outlined(value, 12.0, color))
-}
-
 fn mmss(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// Your own live numbers.
-fn quick_stats(s: &Snapshot) -> AnyElement {
+/// Item gold ("realized gold") a player is carrying.
+fn item_gold(data: &StaticData, p: &Player) -> i64 {
+    p.items.iter().map(|i| data.items.get(&i.item_id).map(|x| x.gold as i64).unwrap_or(0) * i.count.max(1) as i64).sum()
+}
+
+/// Your numbers next to your lane opponent's, like U.GG's quick stats:
+/// label, yours, then an arrow (blue: you're ahead, red: behind) and theirs.
+fn quick_stats(s: &Snapshot, k: f32, cx: &mut App) -> AnyElement {
     let Some(me) = s.game.me() else { return div().into_any_element() };
-    let minutes = (s.game.game_data.game_time / 60.0).max(1.0 / 60.0);
-    let sc = &me.scores;
-    let cs_min = sc.creep_score as f64 / minutes;
-    let kda = (sc.kills + sc.assists) as f64 / sc.deaths.max(1) as f64;
-    let team_kills = s.game.team_kills();
-    let kp = if team_kills == 0 { 0.0 } else { (sc.kills + sc.assists) as f64 * 100.0 / team_kills as f64 };
-    // Rough targets: 7+ CS/min is strong, under 5 is low (not for supports/junglers).
-    let cs_color = if cs_min >= 7.0 { ACCENT } else if cs_min < 5.0 { RED } else { TEXT };
-    panel("Quick Stats")
-        .w_full()
-        .child(row("Game time", mmss(s.game.game_data.game_time), TEXT))
-        .child(row("CS", format!("{} ({cs_min:.1}/min)", sc.creep_score), cs_color))
-        .child(row("KDA", format!("{}/{}/{} ({kda:.2})", sc.kills, sc.deaths, sc.assists), if kda >= 3.0 { ACCENT } else { TEXT }))
-        .child(row("Kill participation", format!("{kp:.0}%"), if kp >= 50.0 { ACCENT } else { TEXT }))
-        .child(row("Vision score", format!("{:.0}", sc.ward_score), TEXT))
-        .child(row("Gold", format!("{:.0}", s.game.active_player.current_gold), GOLD))
-        .into_any_element()
+    let opp = s.game.opponent();
+    let minutes = (s.game.game_data.game_time / 60.0).max(1.0);
+    let team_kills = |p: &Player| -> u32 {
+        s.game.all_players.iter().filter(|q| q.team == p.team).map(|q| q.scores.kills).sum()
+    };
+    let kp = |p: &Player| -> f64 {
+        let t = team_kills(p);
+        if t == 0 { 0.0 } else { (p.scores.kills + p.scores.assists) as f64 * 100.0 / t as f64 }
+    };
+    struct Stat {
+        label: &'static str,
+        mine: f64,
+        theirs: Option<f64>,
+        fmt: fn(f64) -> String,
+    }
+    let int = |v: f64| format!("{v:.0}");
+    let one = |v: f64| format!("{v:.1}");
+    let pct = |v: f64| format!("{v:.0}%");
+    let stats = [
+        Stat {
+            label: "Gold / min",
+            mine: item_gold(&s.data, me) as f64 / minutes,
+            theirs: opp.map(|o| item_gold(&s.data, o) as f64 / minutes),
+            fmt: int,
+        },
+        Stat { label: "CS / min", mine: me.scores.creep_score as f64 / minutes, theirs: opp.map(|o| o.scores.creep_score as f64 / minutes), fmt: one },
+        Stat { label: "Kill Par.", mine: kp(me), theirs: opp.map(kp), fmt: pct },
+        Stat { label: "Vision / min", mine: me.scores.ward_score / minutes, theirs: opp.map(|o| o.scores.ward_score / minutes), fmt: one },
+        Stat { label: "Level", mine: me.level as f64, theirs: opp.map(|o| o.level as f64), fmt: int },
+    ];
+    let rows: Vec<AnyElement> = stats
+        .iter()
+        .map(|st| {
+            let (arrow, color) = match st.theirs {
+                Some(t) if (st.fmt)(st.mine) != (st.fmt)(t) && st.mine > t => ("▲", BLUE_TEAM),
+                Some(t) if (st.fmt)(st.mine) != (st.fmt)(t) => ("▼", RED_TEAM),
+                _ => ("-", MUTED),
+            };
+            let theirs = st.theirs.map(st.fmt).unwrap_or_else(|| "–".into());
+            div()
+                .flex()
+                .items_center()
+                .h(px(20.0 * k))
+                .child(div().flex_1().child(outlined(st.label.to_string(), 12.0 * k, 0xffffff)))
+                .child(div().w(px(48.0 * k)).flex().justify_end().child(outlined((st.fmt)(st.mine), 12.0 * k, 0xc9ccd4)))
+                .child(div().w(px(18.0 * k)).flex().justify_center().child(arrow_glyph(arrow, 10.0 * k, color)))
+                .child(div().w(px(48.0 * k)).flex().justify_end().child(outlined(theirs, 12.0 * k, 0xc9ccd4)))
+                .into_any_element()
+        })
+        .collect();
+    let opp_icon = opp
+        .and_then(|o| s.data.champion_by_id(o.champion_id()))
+        .and_then(|c| s.data.champion_icon(c.key));
+    let header = div()
+        .flex()
+        .items_center()
+        .gap(px(6.0 * k))
+        .px(px(6.0 * k))
+        .h(px(24.0 * k))
+        .rounded(px(4.0 * k))
+        .bg(rgba(0x0b0f17b3))
+        .child(gpui::img(poro_logo()).size(px(16.0 * k)))
+        .child(outlined("Poro".into(), 12.0 * k, 0xffffff))
+        .child(div().flex_1())
+        .child(outlined("vs".into(), 10.0 * k, MUTED))
+        .child(images::round(opp_icon.as_deref(), 16.0 * k, cx))
+        .child(outlined(mmss(s.game.game_data.game_time), 11.0 * k, 0xffffff));
+    div().flex().flex_col().gap(px(4.0 * k)).child(header).child(div().px(px(4.0 * k)).children(rows)).into_any_element()
+}
+
+/// A small ▲/▼ without an outline (an outline smears glyphs this small).
+fn arrow_glyph(glyph: &str, size: f32, color: u32) -> AnyElement {
+    div().font_family("Segoe UI Symbol").text_size(px(size)).text_color(rgb(color)).child(glyph.to_string()).into_any_element()
+}
+
+/// Poro's logo, loaded once.
+fn poro_logo() -> std::sync::Arc<gpui::Image> {
+    static LOGO: std::sync::OnceLock<std::sync::Arc<gpui::Image>> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| {
+        std::sync::Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, include_bytes!("../../assets/poro.png").to_vec()))
+    })
+    .clone()
 }
 
 /// The next five skill points from the recommended build.
@@ -539,7 +598,7 @@ fn gold_tag(diff: i64, k: f32) -> AnyElement {
         .gap(px(4.0 * k))
         .child(coin(k))
         .child(outlined(text, 11.0 * k, 0xffffff))
-        .children(arrow.map(|(a, c)| outlined(a.to_string(), 8.0 * k, c)))
+        .children(arrow.map(|(a, c)| arrow_glyph(a, 10.0 * k, c)))
         .into_any_element()
 }
 
