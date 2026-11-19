@@ -353,15 +353,28 @@ impl AppView {
 
     /// Name, "Weak Against" and skills for one side of the VS card.
     fn render_side(&mut self, data: &StaticData, key: u32, left: bool, cx: &mut Context<Self>) -> AnyElement {
-        let stats = if left { &self.a_stats } else { &self.b_stats };
-        let mut weak: Vec<_> = self.lane_stats(stats).map(|s| s.match_up.weak_against.clone()).unwrap_or_default();
-        weak.sort_by(|x, y| x.win_rate.total_cmp(&y.win_rate));
+        // The same data as the Counters tab: lolalytics, this lane, this patch,
+        // lowest win rate first.
+        let lane = self.lane;
+        let counters = self.counters_for(key, lane, cx);
+        let weak_note = match &counters {
+            Loadable::Loading => Some("Loading…".to_string()),
+            Loadable::Failed(_) => Some(format!("No lolalytics data for {} {}", data.champion_name(key), lane.label())),
+            Loadable::Ready(list) if list.is_empty() => Some(format!("No lolalytics data for {} {}", data.champion_name(key), lane.label())),
+            _ => None,
+        };
+        let weak: Vec<crate::data::lolalytics::Counter> = counters.ready().map(|l| l.iter().take(5).cloned().collect()).unwrap_or_default();
+        let name = data.champion_name(key);
         let weak_icons: Vec<AnyElement> = weak
             .iter()
-            .take(5)
             .map(|m| {
-                let icon = tips::champ(data, m.enemy_champion_id, 30., true, cx);
-                let enemy = m.enemy_champion_id;
+                let enemy = m.cid;
+                let tip = crate::data::ddragon::Tip {
+                    title: data.champion_name(enemy),
+                    subtitle: Some(format!("{name} wins {:.2}% of {} games vs them", m.vs_wr, thousands(m.n))),
+                    body: format!("Δ1 {:+.2} · Δ2 {:+.2} · their win rate overall {:.2}% (lolalytics, patch {})", m.d1, m.d2, m.all_wr, self.patch_label()),
+                };
+                let icon = tips::tipped(images::round(data.champion_icon(enemy).as_deref(), 30., cx), Some(tip));
                 let lane = self.lane;
                 div()
                     .id(SharedString::from(format!("weak-{left}-{enemy}")))
@@ -409,6 +422,7 @@ impl AppView {
             .child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(champ.map(|c| c.id).unwrap_or_default()))
             .child(div().mt(px(6.)).text_size(px(12.)).text_color(rgb(MUTED)).child("Weak Against"))
             .child(div().flex().gap(px(5.)).children(weak_icons))
+            .children(weak_note.map(|n| div().text_size(px(11.)).text_color(rgb(MUTED)).child(n)))
             .child(div().mt(px(6.)).text_size(px(12.)).text_color(rgb(MUTED)).child("Skills"))
             .child(div().flex().gap(px(5.)).children(skills))
             .into_any_element()
@@ -453,7 +467,7 @@ impl AppView {
                     .into_any_element()
             }
             Loadable::Loading => div().text_color(rgb(MUTED)).child("Loading tips…").into_any_element(),
-            Loadable::Failed(e) => div().text_color(rgb(MUTED)).text_size(px(13.)).child(format!("No tips: {e}")).into_any_element(),
+            Loadable::Failed(e) => div().text_color(rgb(MUTED)).text_size(px(13.)).child(if e.contains("no tips") { "deeplol has no tips for this matchup yet.".to_string() } else { format!("Couldn't load tips: {e}") }).into_any_element(),
             Loadable::Idle => div().into_any_element(),
         };
         card()

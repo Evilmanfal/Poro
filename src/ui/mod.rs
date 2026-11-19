@@ -110,6 +110,9 @@ pub struct AppView {
     c_lane_auto: bool,
     pub input_c: Entity<TextInput>,
     pub counters: Loadable<Counters>,
+    /// lolalytics counters for the VS card's "Weak Against", by
+    /// (champion, lane, patch); hardest matchups first.
+    counter_cache: HashMap<(u32, Lane, String), Loadable<Vec<lolalytics::Counter>>>,
     pub sort: (SortCol, bool),
     c_gen: u64,
 
@@ -184,6 +187,7 @@ impl AppView {
             c_lane_auto: true,
             input_c,
             counters: Loadable::Idle,
+            counter_cache: HashMap::new(),
             sort: (SortCol::VsWr, true),
             c_gen: 0,
             client: ClientStatus::NotRunning,
@@ -431,6 +435,37 @@ impl AppView {
         self.games_shown = GAMES_PAGE;
         self.expanded = None;
         cx.notify();
+    }
+
+    /// lolalytics' counters for `champ` in `lane` on the selected patch,
+    /// lowest win rate first (loads them the first time).
+    pub fn counters_for(&mut self, champ: u32, lane: Lane, cx: &mut Context<Self>) -> Loadable<Vec<lolalytics::Counter>> {
+        let patch = self.patch_label().to_string();
+        let key = (champ, lane, patch.clone());
+        if let Some(state) = self.counter_cache.get(&key) {
+            return match state {
+                Loadable::Ready(v) => Loadable::Ready(v.clone()),
+                Loadable::Failed(e) => Loadable::Failed(e.clone()),
+                Loadable::Loading => Loadable::Loading,
+                Loadable::Idle => Loadable::Idle,
+            };
+        }
+        let Some(data) = self.data.clone() else { return Loadable::Idle };
+        self.counter_cache.insert(key.clone(), Loadable::Loading);
+        let live = self.is_latest_patch();
+        spawn_job(
+            cx,
+            move || {
+                let c = data.champion(champ).ok_or_else(|| anyhow::anyhow!("unknown champion"))?.clone();
+                let mut list = lolalytics::counters(&c, lane, &patch, live)?.counters;
+                list.sort_by(|a, b| a.vs_wr.total_cmp(&b.vs_wr));
+                Ok(list)
+            },
+            move |this, r, _| {
+                this.counter_cache.insert(key, Loadable::from(r));
+            },
+        );
+        Loadable::Loading
     }
 
     /// The matchup's games for the selected patch. On the live patch that's

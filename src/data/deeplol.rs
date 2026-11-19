@@ -140,9 +140,30 @@ impl Build {
         Some(RunePage {
             primary_style: main[0],
             sub_style: sub[0],
-            perks: [main[1], main[2], main[3], main[4], sub[1], sub[2], stat[0], stat[1], stat[2]],
+            perks: with_shards([main[1], main[2], main[3], main[4], sub[1], sub[2]], [stat[0], stat[1], stat[2]]),
         })
     }
+}
+
+/// The League client's stat shard rows, top to bottom (offense, flex,
+/// defense), as `/lol-perks/v1/styles` reports them.
+const SHARD_ROWS: [&[u32]; 3] = [&[5008, 5005, 5007], &[5008, 5010, 5001], &[5011, 5013, 5001]];
+
+/// Puts deeplol's stat shards in the order the League client wants.
+/// deeplol lists them bottom-up (defense, flex, offense, like Riot's match
+/// data), while the client wants top-down; sending them as-is put e.g.
+/// Health in the offense row and made the page invalid. Tries the reversed
+/// order first, then any order that fits every row.
+pub fn order_shards(shards: [u32; 3]) -> [u32; 3] {
+    let [a, b, c] = shards;
+    let fits = |o: &[u32; 3]| o.iter().zip(SHARD_ROWS).all(|(s, row)| row.contains(s));
+    let candidates = [[c, b, a], [a, b, c], [a, c, b], [b, a, c], [b, c, a], [c, a, b]];
+    candidates.into_iter().find(|o| fits(o)).unwrap_or([c, b, a])
+}
+
+fn with_shards(runes: [u32; 6], shards: [u32; 3]) -> [u32; 9] {
+    let s = order_shards(shards);
+    [runes[0], runes[1], runes[2], runes[3], runes[4], runes[5], s[0], s[1], s[2]]
 }
 
 /// A complete rune page, in the order the League client wants it.
@@ -195,10 +216,11 @@ pub struct Tips {
 pub fn tips(champion: u32, enemy: u32) -> Result<Tips> {
     #[derive(Deserialize)]
     struct File {
+        // deeplol sends null for both when it has no tips for a matchup.
         #[serde(rename = "levelAdvantage", default)]
-        level_advantage: HashMap<String, String>,
+        level_advantage: Option<HashMap<String, String>>,
         #[serde(default)]
-        tips: Vec<Tip>,
+        tips: Option<Vec<Tip>>,
     }
     #[derive(Deserialize)]
     struct Tip {
@@ -209,15 +231,19 @@ pub fn tips(champion: u32, enemy: u32) -> Result<Tips> {
         &format!("{API}/matchup/matchup_tips?champion_id={champion}&enemy_champion_id={enemy}&language=en_US"),
         LIVE,
     )?;
+    let level_advantage = f.level_advantage.unwrap_or_default();
+    if level_advantage.is_empty() && f.tips.as_ref().is_none_or(|t| t.is_empty()) {
+        anyhow::bail!("deeplol has no tips for this matchup yet");
+    }
     let levels = (1..=6)
-        .map(|lv| match f.level_advantage.get(&format!("lv{lv}")).map(String::as_str) {
+        .map(|lv| match level_advantage.get(&format!("lv{lv}")).map(String::as_str) {
             // deeplol sends these in Korean: 유리 = favoured, 불리 = unfavoured.
             Some("유리") => Some(true),
             Some("불리") => Some(false),
             _ => None,
         })
         .collect();
-    Ok(Tips { levels, tips: f.tips.into_iter().map(|t| (t.title, t.tip)).collect() })
+    Ok(Tips { levels, tips: f.tips.unwrap_or_default().into_iter().map(|t| (t.title, t.tip)).collect() })
 }
 
 /// A real game of the matchup by a pro or high-elo player.
@@ -347,7 +373,7 @@ impl Game {
         RunePage {
             primary_style: r.perk_primary_style,
             sub_style: r.perk_sub_style,
-            perks: [r.perk_0, r.perk_1, r.perk_2, r.perk_3, r.perk_4, r.perk_5, r.stat_perk_0, r.stat_perk_1, r.stat_perk_2],
+            perks: with_shards([r.perk_0, r.perk_1, r.perk_2, r.perk_3, r.perk_4, r.perk_5], [r.stat_perk_0, r.stat_perk_1, r.stat_perk_2]),
         }
     }
 
@@ -418,6 +444,16 @@ pub fn games(champion: u32, enemy: u32, page: u32, player_type: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shards_go_top_down() {
+        // The broken import: deeplol's [Health, Adaptive, Adaptive].
+        assert_eq!(super::order_shards([5011, 5008, 5008]), [5008, 5008, 5011]);
+        // Orianna's general build [Scaling Health, Adaptive, Attack Speed].
+        assert_eq!(super::order_shards([5001, 5008, 5005]), [5005, 5008, 5001]);
+        // Already top-down stays as it is.
+        assert_eq!(super::order_shards([5005, 5010, 5013]), [5005, 5010, 5013]);
+    }
+
     #[test]
     fn live_champion() {
         let r = super::champion(61, "16.22", true);
