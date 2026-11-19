@@ -246,6 +246,9 @@ pub struct Game {
     pub riot_id_tag_line: String,
     #[serde(default)]
     pub tier: String,
+    /// The lane played, e.g. "Middle".
+    #[serde(default)]
+    pub position: String,
     #[serde(default)]
     pub game_duration: u64,
     #[serde(default)]
@@ -312,6 +315,14 @@ pub struct ItemEvent {
 }
 
 impl Game {
+    pub fn lane(&self) -> Option<Lane> {
+        Lane::from_deeplol(self.position.rsplit('_').next().unwrap_or(""))
+    }
+
+    pub fn is_otp(&self) -> bool {
+        self.player_type == "OTP"
+    }
+
     pub fn is_streamer(&self) -> bool {
         self.pro_streamer_status == "streamer"
     }
@@ -390,14 +401,16 @@ pub fn game_patch(match_id: &str) -> Result<String> {
     Ok(patch)
 }
 
-pub fn games(champion: u32, enemy: u32, page: u32) -> Result<Vec<Game>> {
+/// Which of deeplol's game lists: "ALL" (high-elo players and one-tricks)
+/// or "Pro" (pro players' games, a separate list).
+pub fn games(champion: u32, enemy: u32, page: u32, player_type: &str) -> Result<Vec<Game>> {
     #[derive(Deserialize)]
     struct File {
         #[serde(default)]
         match_up_list: Vec<Game>,
     }
     let f: File = get_json(
-        &format!("{API}/matchup/OTP_match?champion_id={champion}&enemy_champion_id={enemy}&page={page}&player_type=ALL"),
+        &format!("{API}/matchup/OTP_match?champion_id={champion}&enemy_champion_id={enemy}&page={page}&player_type={player_type}"),
         LIVE,
     )?;
     Ok(f.match_up_list)

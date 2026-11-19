@@ -27,3 +27,6 @@ whose tooltip is showing now requests a frame. Tooltips are hidden during
 prepaint, and with the idle vsync change above an idle window doesn't
 repaint on a plain mouse move, so tooltips stayed up until something else
 redrew the window.
+
+`src/elements/div.rs` (`POROPATCH`): `TOOLTIP_SHOW_DELAY` is 0 instead of
+500 ms, so tooltips appear as soon as an element is hovered.

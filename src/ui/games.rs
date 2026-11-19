@@ -6,7 +6,9 @@ use gpui::{div, prelude::*, px, AnyElement, App, Context, FontWeight, SharedStri
 use super::matchup::labeled;
 use super::theme::*;
 use super::tips;
-use super::{AppView, Loadable};
+use super::{AppView, Loadable, PlayerFilter};
+use crate::data::ddragon::Lane;
+use crate::images;
 use crate::data::ddragon::StaticData;
 use crate::data::deeplol::{Game, RunePage};
 
@@ -69,14 +71,29 @@ pub fn skill_order_row(levels: &[u32], max: usize) -> AnyElement {
 impl AppView {
     pub fn render_games(&mut self, data: &StaticData, cx: &mut Context<Self>) -> AnyElement {
         let (Some(a), Some(b)) = (self.a, self.b) else { return div().into_any_element() };
-        let pros_only = self.pros_only;
         let patch_games = self.patch_games();
-        let all: Vec<Game> = patch_games.iter().filter(|g| !pros_only || (g.is_pro() || g.is_streamer())).cloned().collect();
+        let lane_filter = self.games_lane;
+        let player_filter = self.games_player;
+        let all: Vec<Game> = patch_games
+            .iter()
+            .filter(|g| lane_filter.is_none() || g.lane() == lane_filter)
+            .filter(|g| match player_filter {
+                PlayerFilter::All => true,
+                PlayerFilter::Otp => g.is_otp(),
+                PlayerFilter::Pro => g.is_pro(),
+            })
+            .cloned()
+            .collect();
         let shown = self.games_shown.min(all.len());
         let rows: Vec<AnyElement> = all[..shown].iter().map(|g| self.render_game(data, g, cx)).collect();
         let footer = match &self.history {
             Loadable::Loading => div().text_color(rgb(MUTED)).text_size(px(13.)).child("Loading games…").into_any_element(),
             Loadable::Failed(e) => div().text_color(rgb(RED)).text_size(px(13.)).child(format!("Couldn't load games: {e}")).into_any_element(),
+            _ if all.is_empty() && !patch_games.is_empty() => div()
+                .text_color(rgb(MUTED))
+                .text_size(px(13.))
+                .child("No games match these filters.")
+                .into_any_element(),
             _ if all.is_empty() => div()
                 .text_color(rgb(MUTED))
                 .text_size(px(13.))
@@ -98,24 +115,52 @@ impl AppView {
                 }))
                 .into_any_element(),
         };
-        let filter = |id: &'static str, label: &'static str, active: bool, value: bool, cx: &mut Context<Self>| {
+        // deeplol's filter bar: ALL / TOP / JUG / MID / BOT / SUP, then ALL / OTP / PRO.
+        let chip = |id: SharedString, icon: Option<AnyElement>, label: &'static str, active: bool| {
             div()
                 .id(id)
-                .px(px(10.))
-                .py(px(4.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .h(px(30.))
+                .px(px(12.))
                 .rounded(px(5.))
                 .text_size(px(12.))
+                .font_weight(FontWeight::BOLD)
                 .cursor_pointer()
                 .border_1()
-                .when(active, |d| d.border_color(rgb(ACCENT)).text_color(rgb(ACCENT)))
-                .when(!active, |d| d.border_color(rgb(BORDER)).text_color(rgb(MUTED)))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.pros_only = value;
-                    cx.notify();
-                }))
+                .when(active, |d| d.border_color(rgb(ACCENT)).text_color(rgb(ACCENT)).bg(rgba(0x37c8ab1a)))
+                .when(!active, |d| d.border_color(rgba(0x00000000)).text_color(rgb(ACCENT)).hover(|s| s.bg(rgb(PANEL_2))))
+                .children(icon)
                 .child(label)
         };
-        let pro_count = patch_games.iter().filter(|g| g.is_pro() || g.is_streamer()).count();
+        let mut lane_chips: Vec<AnyElement> = vec![chip("glane-all".into(), None, "ALL", lane_filter.is_none())
+            .on_click(cx.listener(|this, _, _, cx| this.set_games_filter(None, this.games_player, cx)))
+            .into_any_element()];
+        for lane in Lane::ALL {
+            let icon = images::icon(Some(&lane.icon()), 16., cx);
+            lane_chips.push(
+                chip(format!("glane-{}", lane.short()).into(), Some(icon), lane.short(), lane_filter == Some(lane))
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_games_filter(Some(lane), this.games_player, cx)))
+                    .into_any_element(),
+            );
+        }
+        let player_chips: Vec<AnyElement> = [(PlayerFilter::All, "ALL"), (PlayerFilter::Otp, "OTP"), (PlayerFilter::Pro, "PRO")]
+            .into_iter()
+            .map(|(f, label)| {
+                chip(format!("gplayer-{label}").into(), None, label, player_filter == f)
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_games_filter(this.games_lane, f, cx)))
+                    .into_any_element()
+            })
+            .collect();
+        let filter_bar = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(4.))
+            .children(lane_chips)
+            .child(div().mx(px(10.)).text_color(rgb(MUTED)).child("/"))
+            .children(player_chips);
         let scope = if self.history.ready().is_some() { self.patch_games_label(&patch_games) } else { String::new() };
         card()
             .flex()
@@ -132,9 +177,9 @@ impl AppView {
                         data.champion_name(b)
                     )))
                     .child(div().flex_1())
-                    .child(filter("all-games", "All", !pros_only, false, cx))
-                    .child(filter("pro-games", if pro_count > 0 { "Pros & streamers" } else { "Pros & streamers (none here)" }, pros_only, true, cx)),
+                    .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child(format!("{} shown of {}", all.len(), patch_games.len()))),
             )
+            .child(filter_bar)
             .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(if self.is_latest_patch() {
                 format!("{scope} · every recent game deeplol has (pick an older patch to see only its games). Click a game for its full build.")
             } else {
@@ -190,11 +235,10 @@ impl AppView {
                     })
                     .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).truncate().child(g.display_name())),
             )
-            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child(format!(
-                "{} · {}",
-                if g.tier.is_empty() { "Ranked".to_string() } else { g.tier.clone() },
-                if g.player_type == "OTP" { "One-trick" } else { "" }
-            )))
+            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).child({
+                let tier = if g.tier.is_empty() { "Ranked".to_string() } else { g.tier.clone() };
+                if g.is_otp() { format!("{tier} · One-trick") } else { tier }
+            }))
             .child(
                 div()
                     .flex()

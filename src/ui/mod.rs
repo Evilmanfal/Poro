@@ -95,7 +95,9 @@ pub struct AppView {
     pub history: Loadable<Vec<Game>>,
     /// How many of the matchup's games the list shows.
     pub games_shown: usize,
-    pub pros_only: bool,
+    /// Games list filters (deeplol's lane and ALL/OTP/PRO buttons).
+    pub games_lane: Option<Lane>,
+    pub games_player: PlayerFilter,
     pub expanded: Option<String>,
     pub skills: HashMap<u32, Vec<ddragon::Skill>>,
     gen: u64,
@@ -169,7 +171,8 @@ impl AppView {
             tips: Loadable::Idle,
             history: Loadable::Idle,
             games_shown: GAMES_PAGE,
-            pros_only: false,
+            games_lane: None,
+            games_player: PlayerFilter::All,
             expanded: None,
             skills: HashMap::new(),
             gen: 0,
@@ -415,6 +418,14 @@ impl AppView {
                 }
             });
         }
+        cx.notify();
+    }
+
+    pub fn set_games_filter(&mut self, lane: Option<Lane>, player: PlayerFilter, cx: &mut Context<Self>) {
+        self.games_lane = lane;
+        self.games_player = player;
+        self.games_shown = GAMES_PAGE;
+        self.expanded = None;
         cx.notify();
     }
 
@@ -699,6 +710,13 @@ impl AppView {
             )
             .into_any_element()
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PlayerFilter {
+    All,
+    Otp,
+    Pro,
 }
 
 /// Games shown at a time in the games list.

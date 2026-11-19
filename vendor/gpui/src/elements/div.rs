@@ -45,7 +45,8 @@ use util::ResultExt;
 use super::ImageCacheProvider;
 
 const DRAG_THRESHOLD: f64 = 2.;
-const TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
+// POROPATCH: was 500 ms; Poro shows descriptions as soon as an icon is hovered.
+const TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(0);
 const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);
 
 /// The styling information for a given group.

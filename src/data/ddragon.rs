@@ -32,6 +32,29 @@ impl Lane {
         }
     }
 
+    /// Short label for filters ("JUG").
+    pub fn short(self) -> &'static str {
+        match self {
+            Lane::Top => "TOP",
+            Lane::Jungle => "JUG",
+            Lane::Middle => "MID",
+            Lane::Bottom => "BOT",
+            Lane::Support => "SUP",
+        }
+    }
+
+    /// The League client's lane icon (via CommunityDragon).
+    pub fn icon(self) -> String {
+        let name = match self {
+            Lane::Top => "top",
+            Lane::Jungle => "jungle",
+            Lane::Middle => "middle",
+            Lane::Bottom => "bottom",
+            Lane::Support => "utility",
+        };
+        format!("https://raw.communitydragon.org/latest/plugins/rcp-fe-lol-clash/global/default/assets/images/position-selector/positions/icon-position-{name}.png")
+    }
+
     /// deeplol's lane keys.
     pub fn deeplol(self) -> &'static str {
         match self {

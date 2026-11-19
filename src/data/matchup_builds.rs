@@ -48,28 +48,41 @@ pub struct MatchupBuilds {
     pub builds: Vec<MatchupBuild>,
 }
 
-/// Every game deeplol has of `champion` vs `enemy`, newest first.
-pub fn all_games(champion: u32, enemy: u32) -> Result<Vec<Game>> {
+/// One of deeplol's game lists, up to MAX_PAGES pages.
+fn game_list(champion: u32, enemy: u32, player_type: &'static str) -> Result<Vec<Game>> {
     let pages: Vec<Result<Vec<Game>>> = std::thread::scope(|s| {
-        let handles: Vec<_> = (1..=MAX_PAGES).map(|p| s.spawn(move || deeplol::games(champion, enemy, p))).collect();
+        let handles: Vec<_> =
+            (1..=MAX_PAGES).map(|p| s.spawn(move || deeplol::games(champion, enemy, p, player_type))).collect();
         handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Ok(Vec::new()))).collect()
     });
-    let mut out: Vec<Game> = Vec::new();
+    let mut out = Vec::new();
     for (i, page) in pages.into_iter().enumerate() {
         match page {
             Ok(list) if list.is_empty() => break,
-            Ok(list) => {
-                for g in list {
-                    if !out.iter().any(|o| o.match_id == g.match_id) {
-                        out.push(g);
-                    }
-                }
-            }
+            Ok(list) => out.extend(list),
             // A later page failing just means less data.
             Err(e) if i == 0 => return Err(e),
             Err(_) => break,
         }
     }
+    Ok(out)
+}
+
+/// Every game deeplol has of `champion` vs `enemy`: its normal list
+/// (high-elo players and one-tricks) plus its separate pro players' list,
+/// newest first.
+pub fn all_games(champion: u32, enemy: u32) -> Result<Vec<Game>> {
+    let (normal, pro) = std::thread::scope(|s| {
+        let pro = s.spawn(move || game_list(champion, enemy, "Pro"));
+        (game_list(champion, enemy, "ALL"), pro.join().unwrap_or_else(|_| Ok(Vec::new())))
+    });
+    let mut out: Vec<Game> = Vec::new();
+    for g in normal?.into_iter().chain(pro.unwrap_or_default()) {
+        if !out.iter().any(|o| o.match_id == g.match_id) {
+            out.push(g);
+        }
+    }
+    out.sort_by(|a, b| b.game_end_time.cmp(&a.game_end_time));
     // Look up each game's patch, 10 at a time.
     for chunk in out.chunks_mut(10) {
         std::thread::scope(|s| {
