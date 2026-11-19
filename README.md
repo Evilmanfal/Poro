@@ -32,3 +32,20 @@ unreachable, the app shows the last good copy.
 ./build.ps1 build -Release   # target/release/poro.exe
 ```
 GPUI 0.2.2 is vendored with Neo's idle-CPU patch (`vendor/gpui/NEO-PATCH.md`).
+
+## Updates
+Poro updates itself from this repo's GitHub releases. At start and every 12 hours it checks the latest
+release. If that release is newer, Poro offers to update, downloads `poro.exe`, checks its signature and
+restarts on the new version. Each release ships `poro.exe` plus `poro.exe.sig`, an Ed25519 signature made
+with a private key that exists only on the developer's PC. The matching public key is built into the app
+(`src/update.rs`), so a download that doesn't verify is deleted and never run.
+
+## Releasing
+1. Bump `version` in `Cargo.toml` and commit.
+2. Run `./release.ps1`. It builds, signs with `%APPDATA%\Poro-release\release.key` and puts `poro.exe` and
+   `poro.exe.sig` in `dist/`.
+3. Publish a GitHub release tagged `v<version>` with both files attached under exactly those names, e.g.
+   `gh release create v0.1.1 dist/poro.exe dist/poro.exe.sig --title "Poro v0.1.1" --notes "..."`.
+
+Keep a backup of the release key. Without it, installed copies can't be updated (they would need a manual
+download of a build with a new key).

@@ -6,6 +6,7 @@ mod games;
 mod matchup;
 mod theme;
 mod tips;
+mod update;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -119,6 +120,7 @@ pub struct AppView {
     lcu: Arc<Mutex<Option<Lcu>>>,
     pub toast: Option<(String, bool)>,
     toast_gen: u64,
+    up: update::UpdateState,
 }
 
 /// Runs `job` on a background thread, then `done` on the UI thread.
@@ -190,7 +192,9 @@ impl AppView {
             lcu: Arc::new(Mutex::new(None)),
             toast: None,
             toast_gen: 0,
+            up: update::UpdateState::default(),
         };
+        view.start_update_checks(cx);
         view.load_static(cx);
         view.poll_client(cx);
         view
@@ -668,6 +672,7 @@ impl AppView {
             }
         };
         let follow = self.follow_client;
+        let update_pill = self.update_pill(cx);
 
         div()
             .flex()
@@ -679,13 +684,15 @@ impl AppView {
             .border_b_1()
             .border_color(rgb(BORDER))
             .child(gpui::img(self.logo.clone()).size(px(30.)).flex_none())
-            .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::BOLD).text_color(rgb(TEXT)).mr(px(10.)).child("Poro"))
+            .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::BOLD).text_color(rgb(TEXT)).child("Poro"))
+            .child(div().text_size(px(11.)).text_color(rgb(MUTED)).mr(px(10.)).child(format!("v{}", crate::update::current())))
             .child(tab("Champion Matchup", Tab::Matchup, self, cx))
             .child(tab("Counters", Tab::Counters, self, cx))
             .child(div().flex_1())
             .child(div().text_size(px(12.)).text_color(rgb(MUTED)).child("Patch"))
             .children(patches)
             .child(div().w(px(10.)))
+            .children(update_pill)
             .child(
                 div()
                     .id("client")
@@ -749,6 +756,7 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         tips::reset_ids();
         let top = self.render_top_bar(cx);
+        let update_card = self.update_card(cx);
         let body = if let Some(err) = &self.startup_error {
             div().p(px(24.)).text_color(rgb(RED)).child(format!("Couldn't load game data: {err}")).into_any_element()
         } else if self.data.is_none() {
@@ -786,6 +794,7 @@ impl Render for AppView {
             .track_focus(&self.focus)
             .on_mouse_down(MouseButton::Left, |_, _, _| {})
             .child(top)
+            .children(update_card)
             // One scroll position per tab.
             .child(
                 div()

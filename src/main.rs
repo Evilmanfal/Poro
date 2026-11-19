@@ -8,10 +8,18 @@ mod images;
 mod lcu;
 mod text_input;
 mod ui;
+mod update;
 
 use gpui::{px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
 fn main() {
+    if let Ok(exe) = std::env::current_exe() {
+        // Just updated: give the old copy a moment to quit, then tidy up after it.
+        if std::env::args().any(|a| a == "--updated") {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        update::cleanup(&exe);
+    }
     Application::new().run(|cx: &mut App| {
         text_input::bind_keys(cx);
         let bounds = Bounds::centered(None, size(px(1280.), px(900.)), cx);

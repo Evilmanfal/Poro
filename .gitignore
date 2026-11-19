@@ -1,1 +1,6 @@
 target/
+
+# Release signing: the key never belongs in the repo
+*.key
+*.sig
+/dist/
