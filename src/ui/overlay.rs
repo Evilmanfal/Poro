@@ -48,6 +48,11 @@ pub struct OverlayState {
 }
 
 impl OverlayState {
+    /// Reload the in-game build on the next poll (background refresh).
+    pub fn refresh_build(&mut self) {
+        self.build_for = None;
+    }
+
     pub fn previewing(&self) -> bool {
         self.preview_until.is_some_and(|t| Instant::now() < t)
     }

@@ -222,6 +222,7 @@ impl AppView {
             ov: overlay::OverlayState::default(),
         };
         view.start_update_checks(cx);
+        view.start_auto_refresh(cx);
         view.start_overlay_loop(cx);
         view.start_tab_watch(cx);
         view.sync_tray(cx);
@@ -240,19 +241,7 @@ impl AppView {
             || Ok((ddragon::load()?, deeplol::versions().ok())),
             |this, r, cx| match r {
                 Ok((data, dl)) => {
-                    this.patches = data
-                        .versions
-                        .iter()
-                        .map(|v| v.split('.').take(2).collect::<Vec<_>>().join("."))
-                        .fold(Vec::new(), |mut acc: Vec<String>, v| {
-                            if !acc.contains(&v) {
-                                acc.push(v);
-                            }
-                            acc
-                        })
-                        .into_iter()
-                        .take(6)
-                        .collect();
+                    this.patches = patch_list(&data);
                     this.data = Some(Arc::new(data));
                     this.dl_versions = dl;
                     // Testing aid: `poro.exe --preview-overlays` starts the overlay preview.
@@ -267,6 +256,56 @@ impl AppView {
                     }
                 }
                 Err(e) => this.startup_error = Some(format!("{e:#}")),
+            },
+        );
+    }
+
+    /// Every 4 hours: pick up new patches and reload whatever is on screen,
+    /// so batches the sites publish while Poro is open show up by themselves.
+    /// (`PORO_REFRESH_SECS` shortens the wait for tests.)
+    fn start_auto_refresh(&mut self, cx: &mut Context<Self>) {
+        let every = std::env::var("PORO_REFRESH_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map(Duration::from_secs)
+            .unwrap_or(AUTO_REFRESH);
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(every).await;
+            if this.update(cx, |this, cx| this.refresh_all(cx)).is_err() {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    fn refresh_all(&mut self, cx: &mut Context<Self>) {
+        if std::env::var_os("PORO_DEBUG").is_some() {
+            eprintln!("auto-refresh: reloading patches and pages");
+        }
+        spawn_job(
+            cx,
+            || Ok((ddragon::load()?, deeplol::versions().ok())),
+            |this, r, cx| {
+                let Ok((data, dl)) = r else { return };
+                // Keep the selected patch; stay on the live one if that's where we were.
+                let was_live = this.is_latest_patch();
+                let label = this.patch_label().to_string();
+                this.patches = patch_list(&data);
+                this.patch = if was_live { 0 } else { this.patches.iter().position(|p| *p == label).unwrap_or(0) };
+                this.data = Some(Arc::new(data));
+                if dl.is_some() {
+                    this.dl_versions = dl;
+                }
+                // Reload what's on screen with the same selections.
+                this.tiers.reset_for_refresh();
+                this.counter_cache.clear();
+                if this.a.is_some() {
+                    this.reload_matchup(false, cx);
+                }
+                this.reload_counters(cx);
+                this.reload_champion_page(cx);
+                this.ov.refresh_build();
+                cx.notify();
             },
         );
     }
@@ -925,6 +964,24 @@ pub enum PlayerFilter {
     All,
     Otp,
     Pro,
+}
+
+/// How often the background refresh runs.
+const AUTO_REFRESH: Duration = Duration::from_secs(4 * 3600);
+
+/// The newest 6 patches ("16.23") from Data Dragon's versions.
+fn patch_list(data: &StaticData) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for v in &data.versions {
+        let p = v.split('.').take(2).collect::<Vec<_>>().join(".");
+        if !out.contains(&p) {
+            out.push(p);
+        }
+        if out.len() == 6 {
+            break;
+        }
+    }
+    out
 }
 
 /// Games shown at a time in the games list.

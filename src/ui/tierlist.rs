@@ -64,6 +64,14 @@ pub struct TierState {
     pub build: usize,
 }
 
+impl TierState {
+    /// Forget the loaded list so it's fetched again (the old one stays on
+    /// screen until the new one arrives).
+    pub fn reset_for_refresh(&mut self) {
+        self.loaded_for.clear();
+    }
+}
+
 impl AppView {
     /// Loads U.GG's tier list for the selected patch (once per patch).
     pub(super) fn ensure_tier_list(&mut self, cx: &mut Context<Self>) {
@@ -72,11 +80,18 @@ impl AppView {
             return;
         }
         self.tiers.loaded_for = patch.clone();
-        self.tiers.list = Some(Loadable::Loading);
+        // On a background refresh keep showing the current list until the new one is in.
+        if !matches!(self.tiers.list, Some(Loadable::Ready(_))) {
+            self.tiers.list = Some(Loadable::Loading);
+        }
         let live = self.is_latest_patch();
         spawn_job(cx, move || ugg::tier_list(&patch, live), move |this, r, _| {
             if this.tiers.loaded_for == this.patch_label() {
-                this.tiers.list = Some(Loadable::from(r));
+                // A failed refresh keeps the list that's already showing.
+                let keep = r.is_err() && matches!(this.tiers.list, Some(Loadable::Ready(_)));
+                if !keep {
+                    this.tiers.list = Some(Loadable::from(r));
+                }
             }
         });
     }
