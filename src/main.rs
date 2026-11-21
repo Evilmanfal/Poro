@@ -18,6 +18,23 @@ mod win;
 use gpui::{px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
 fn main() {
+    // Release builds have no console: write panics to %LOCALAPPDATA%\Poro\crash.log.
+    std::panic::set_hook(Box::new(|info| {
+        let path = data::cache_dir().parent().map(|p| p.join("crash.log"));
+        let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let msg = format!(
+            "Poro v{} crashed (unix time {when}): {info}\n{}\n\n",
+            env!("CARGO_PKG_VERSION"),
+            std::backtrace::Backtrace::force_capture()
+        );
+        eprintln!("{msg}");
+        if let Some(path) = path {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = f.write_all(msg.as_bytes());
+            }
+        }
+    }));
     if let Ok(exe) = std::env::current_exe() {
         // Just updated: give the old copy a moment to quit, then tidy up after it.
         if std::env::args().any(|a| a == "--updated") {

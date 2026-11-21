@@ -387,9 +387,22 @@ const PAGE_PREFIX: &str = "Poro: ";
 const OLD_PAGE_PREFIX: &str = "MU: ";
 const MAX_PAGE_NAME: usize = 30;
 
-/// (port, password) of the running client.
+/// (port, password) of the running client, from the lockfile the client
+/// writes in its install folder while it runs.
+///
+/// This used to fall back to reading LeagueClientUx.exe's command line with a
+/// hidden PowerShell every couple of seconds; antivirus (Avast) treats that as
+/// credential theft and sandboxes Poro. Now the running client's own folder is
+/// found from its process, which needs no helper process.
 fn find_credentials() -> Option<(u16, String)> {
-    for dir in install_dirs() {
+    let running = client_dir();
+    // Not running (and no folder to look in): don't bother with stale lockfiles.
+    if running == Some(None) {
+        return None;
+    }
+    let mut dirs: Vec<PathBuf> = running.flatten().into_iter().collect();
+    dirs.extend(install_dirs());
+    for dir in dirs {
         if let Ok(text) = std::fs::read_to_string(dir.join("lockfile")) {
             // LeagueClient:<pid>:<port>:<password>:https
             let parts: Vec<&str> = text.trim().split(':').collect();
@@ -400,7 +413,7 @@ fn find_credentials() -> Option<(u16, String)> {
             }
         }
     }
-    from_process_command_line()
+    None
 }
 
 fn install_dirs() -> Vec<PathBuf> {
@@ -420,30 +433,55 @@ fn install_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Fallback: read the port and password from LeagueClientUx.exe's arguments.
+/// The League client's folder if it's running: Some(Some(dir)) when found,
+/// Some(None) when it isn't running, None if the process list couldn't be read.
 #[cfg(windows)]
-fn from_process_command_line() -> Option<(u16, String)> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            "(Get-CimInstance Win32_Process -Filter \"name='LeagueClientUx.exe'\").CommandLine",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    let cmd = String::from_utf8_lossy(&out.stdout);
-    let arg = |key: &str| {
-        let start = cmd.find(key)? + key.len();
-        Some(cmd[start..].split(['"', ' ']).next()?.to_string())
+fn client_dir() -> Option<Option<PathBuf>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
-    Some((arg("--app-port=")?.parse().ok()?, arg("--remoting-auth-token=")?))
+    use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut pid = None;
+        let mut ok = Process32FirstW(snap, &mut entry) != 0;
+        while ok {
+            let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+            let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+            if name.eq_ignore_ascii_case("LeagueClientUx.exe") || name.eq_ignore_ascii_case("LeagueClient.exe") {
+                pid = Some(entry.th32ProcessID);
+                break;
+            }
+            ok = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+        let Some(pid) = pid else { return Some(None) };
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // Running, but its folder can't be read: the usual folders are tried.
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let got = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) != 0;
+        CloseHandle(handle);
+        if !got {
+            return None;
+        }
+        let exe = PathBuf::from(String::from_utf16_lossy(&buf[..size as usize]));
+        Some(exe.parent().map(|d| d.to_path_buf()))
+    }
 }
 
 #[cfg(not(windows))]
-fn from_process_command_line() -> Option<(u16, String)> {
+fn client_dir() -> Option<Option<PathBuf>> {
     None
 }
 
@@ -488,5 +526,30 @@ pub fn demo_champ_select(secs: u64) -> ChampSelect {
         phase: "BAN_PICK".into(),
         queue_id: 420,
         game_id: 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Finds a running "LeagueClientUx.exe" (a renamed ping.exe in a temp
+    /// folder with a fake lockfile) without any helper process.
+    #[test]
+    fn finds_client_folder_from_process() {
+        assert_eq!(super::client_dir(), Some(None), "no client should be running for this test");
+        let dir = std::env::temp_dir().join("poro-fake-league");
+        let _ = std::fs::create_dir_all(&dir);
+        let exe = dir.join("LeagueClientUx.exe");
+        std::fs::copy(r"C:\Windows\System32\PING.EXE", &exe).unwrap();
+        std::fs::write(dir.join("lockfile"), "LeagueClient:1234:54321:secretpw:https").unwrap();
+        let mut child = std::process::Command::new(&exe).args(["-n", "20", "127.0.0.1"]).stdout(std::process::Stdio::null()).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let found = super::client_dir();
+        let creds = super::find_credentials();
+        let _ = child.kill();
+        let _ = child.wait();
+        println!("{found:?} {creds:?}");
+        assert_eq!(found, Some(Some(dir.clone())));
+        assert_eq!(creds, Some((54321, "secretpw".to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
