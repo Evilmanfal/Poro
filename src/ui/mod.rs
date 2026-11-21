@@ -969,6 +969,10 @@ impl AppView {
                 .when(active, |d| d.bg(rgb(PANEL_2)).text_color(rgb(TEXT)))
                 .when(!active, |d| d.text_color(rgb(MUTED)).hover(|s| s.text_color(rgb(TEXT))))
                 .on_click(cx.listener(move |this, _, _, cx| {
+                    // Clicking Tier List while on a champion page goes back to the list.
+                    if t == Tab::TierList && this.tab == Tab::TierList {
+                        this.tiers.page = None;
+                    }
                     this.tab = t;
                     cx.notify();
                 }))
