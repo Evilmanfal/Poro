@@ -469,7 +469,7 @@ impl AppView {
                     .child(head("Rank", 170.))
                     .child(head("Champion WR", 110.))
                     .child(head("KDA on champion", 120.))
-                    .child(head("Role", 110.)),
+                    .child(head("Role", 140.)),
             )
             .children(rows)
             .into_any_element()
@@ -596,10 +596,14 @@ fn live_row(data: &StaticData, team: &str, i: usize, p: &LivePlayer, party: Opti
     let games = p.champ_games();
     let champ_wr = (games > 0).then(|| p.champ_wins as f64 * 100.0 / games as f64);
     let kda = p.avg_kda();
+    // Main role = the role they've played most this season. (U.GG's own
+    // `onRole` flag disagreed with its role stats, e.g. "off role" for a
+    // jungle main playing jungle, so it isn't used.)
     let main = p.roles.first().map(|r| r.0);
+    let off_role = matches!((p.role, main), (Some(r), Some(m)) if r != m);
     let role_line = match (p.role, main) {
-        (Some(_), _) if p.on_role => "Main role".to_string(),
-        (Some(_), Some(m)) => format!("Off role (main {})", role_name(m)),
+        (Some(_), Some(m)) if off_role => format!("Off role (main {})", role_name(m)),
+        (Some(_), Some(_)) => "Main role".to_string(),
         _ => String::new(),
     };
     div()
@@ -674,11 +678,11 @@ fn live_row(data: &StaticData, team: &str, i: usize, p: &LivePlayer, party: Opti
         )
         .child(
             div()
-                .w(px(110.))
+                .w(px(140.))
                 .flex()
                 .flex_col()
                 .child(div().text_size(px(13.)).child(p.role.map(role_name).unwrap_or("–").to_string()))
-                .child(div().text_size(px(11.)).text_color(rgb(if p.on_role { MUTED } else { GOLD })).child(role_line)),
+                .child(div().text_size(px(11.)).whitespace_nowrap().text_color(rgb(if off_role { GOLD } else { MUTED })).child(role_line)),
         )
         .into_any_element()
 }

@@ -94,7 +94,7 @@ pub struct LivePlayer {
     /// Totals over those games.
     pub kda: (u64, u64, u64),
     pub role: Option<Lane>,
-    /// Playing their main role.
+    /// U.GG's "on role" flag. Unreliable (false for mains on their main role); Poro uses `roles` instead.
     pub on_role: bool,
     /// Players queued together share a party number.
     pub party: Option<i64>,
