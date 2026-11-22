@@ -250,9 +250,11 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
             }
             let mut ranked: Vec<(u32, usize, f64)> =
                 item_stats.into_iter().map(|(it, (n, pos))| (it, n, pos as f64 / n as f64)).collect();
-            ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.total_cmp(&b.2)));
+            // The item id breaks ties: HashMap order changes every run, and this
+            // runs on every redraw (hovering an icon), so ties made items swap.
+            ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.total_cmp(&b.2)).then(a.0.cmp(&b.0)));
             let mut items: Vec<(u32, f64)> = ranked.iter().take(5).map(|(it, _, pos)| (*it, *pos)).collect();
-            items.sort_by(|a, b| a.1.total_cmp(&b.1));
+            items.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
             let skills = most_common(entries.iter().map(|e| e.game.skill_order().into_iter().take(15).collect::<Vec<_>>()))
                 .unwrap_or_default();
             MatchupBuild {
@@ -315,6 +317,23 @@ mod tests {
         let games = super::all_games(56, 7).unwrap();
         let s = super::summarize(&games, &data, &[], 3);
         assert!(s.builds.iter().all(|b| !b.items.is_empty() && b.style != "Unknown"));
+    }
+
+    /// The builds are recomputed on every redraw, so they must come out the
+    /// same every time (HashMap order used to reorder tied items).
+    #[test]
+    fn live_builds_are_stable() {
+        let data = super::super::ddragon::load().unwrap();
+        for (a, b) in [(56, 64), (61, 7), (64, 56), (157, 238)] {
+            let games = super::all_games(a, b).unwrap();
+            let first: Vec<(String, Vec<u32>, Option<u32>)> =
+                super::summarize(&games, &data, &[], 3).builds.into_iter().map(|m| (m.style, m.items, m.boots)).collect();
+            for _ in 0..50 {
+                let again: Vec<(String, Vec<u32>, Option<u32>)> =
+                    super::summarize(&games, &data, &[], 3).builds.into_iter().map(|m| (m.style, m.items, m.boots)).collect();
+                assert_eq!(first, again, "{a} vs {b}");
+            }
+        }
     }
 
     #[test]
