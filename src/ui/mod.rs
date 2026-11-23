@@ -300,10 +300,9 @@ impl AppView {
                     if std::env::args().any(|a| a == "--preview-overlays") {
                         this.preview_overlays(cx);
                     }
-                    // Start on a matchup so the window isn't empty.
-                    if this.a.is_none() {
-                        this.set_champion(Slot::A, 61, cx);
-                        this.set_champion(Slot::B, 7, cx);
+                    // Champion Matchup starts empty (champ select fills it in);
+                    // Counters starts on a champion so it isn't blank.
+                    if this.c_champ.is_none() {
                         this.set_champion(Slot::C, 61, cx);
                     }
                 }
