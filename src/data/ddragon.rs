@@ -245,6 +245,9 @@ pub struct ItemInfo {
     pub health: bool,
     /// Armor or magic resist without damage.
     pub tank: bool,
+    /// Named unique passives ("Lifeline", "Spellblade", …): two different
+    /// items sharing one don't stack, so they aren't built together.
+    pub passives: Vec<String>,
 }
 
 impl StaticData {
@@ -488,6 +491,20 @@ pub fn load() -> Result<StaticData> {
     Ok(StaticData { versions, champions, by_key, runes, rune_trees, spells, items })
 }
 
+/// "<passive>Lifeline</passive>" names in an item description.
+fn passive_names(desc: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in desc.split("<passive>").skip(1) {
+        if let Some(name) = part.split("</passive>").next() {
+            let name = name.trim().to_string();
+            if !name.is_empty() && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
 fn load_items(v: &str) -> Result<HashMap<u32, ItemInfo>> {
     #[derive(Deserialize)]
     struct File {
@@ -537,6 +554,7 @@ fn load_items(v: &str) -> Result<HashMap<u32, ItemInfo>> {
                 health: has("FlatHPPoolMod"),
                 tank: (has("FlatArmorMod") || has("FlatSpellBlockMod")) && !ap && !ad,
                 gold: it.gold.total,
+                passives: passive_names(&it.description),
                 plaintext: it.plaintext.clone(),
                 desc: clean_html(&it.description),
                 name: it.name,

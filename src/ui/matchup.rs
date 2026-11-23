@@ -559,9 +559,14 @@ impl AppView {
         let (games, note): (Vec<crate::data::deeplol::Game>, Option<String>) = match (self.b, &self.history) {
             (None, _) => (Vec::new(), None),
             (Some(_), Loadable::Ready(_)) => {
-                let games = self.patch_games();
+                // Only games played in the selected lane.
+                let games = matchup_builds::in_lane(&self.patch_games(), self.lane);
                 let note = (games.is_empty()).then(|| {
-                    format!("deeplol has no games of this matchup on patch {}; showing general builds.", self.patch_label())
+                    format!(
+                        "deeplol has no games of this matchup in {} on patch {}; showing general builds.",
+                        self.lane.label(),
+                        self.patch_label()
+                    )
                 });
                 (games, note)
             }
@@ -595,12 +600,26 @@ impl AppView {
                 let spells: Vec<AnyElement> =
                     [b.spells.0, b.spells.1].iter().map(|&s| tips::spell(data, s, 28., cx)).collect();
                 let start: Vec<AnyElement> = b.starter.iter().map(|&it| tips::item(data, it, 28., cx)).collect();
-                let items: Vec<AnyElement> = b
-                    .items
+                // Items from the games, then the ones Poro suggests to finish the build.
+                let bought_boots = b.boots.filter(|_| !b.suggested_boots);
+                let items: Vec<AnyElement> =
+                    b.items.iter().chain(bought_boots.iter()).map(|&it| tips::item(data, it, 28., cx)).collect();
+                let suggested_boots = b.boots.filter(|_| b.suggested_boots);
+                let suggested: Vec<AnyElement> = b
+                    .suggested
                     .iter()
-                    .chain(b.boots.iter())
-                    .map(|&it| tips::item(data, it, 28., cx))
+                    .chain(suggested_boots.iter())
+                    .map(|&it| {
+                        div()
+                            .p(px(1.))
+                            .rounded(px(5.))
+                            .border_1()
+                            .border_color(rgb(GOLD))
+                            .child(tips::item(data, it, 26., cx))
+                            .into_any_element()
+                    })
                     .collect();
+                let from = if b.general.is_some() { "Items (deeplol build)" } else { "Items (from games, buy order)" };
                 let skills = skill_order_row(&b.skills, 15);
                 let keystone = data.rune_name(b.keystone);
                 let stats = match &b.general {
@@ -620,13 +639,19 @@ impl AppView {
                     ),
                 };
                 let mut core = b.items.clone();
-                core.extend(b.boots);
+                core.extend(bought_boots);
+                let mut finish = b.suggested.clone();
+                finish.extend(suggested_boots);
                 let import = super::BuildImport {
                     name: format!("{name} {} {keystone}", b.style),
                     champion: self.a.unwrap_or(0),
                     page: Some(b.runes.clone()),
                     spells: Some(b.spells),
-                    blocks: vec![("Starting items".into(), b.starter.clone()), ("Core items".into(), core)],
+                    blocks: vec![
+                        ("Starting items".into(), b.starter.clone()),
+                        ("Core items".into(), core),
+                        ("Suggested to finish the build".into(), finish),
+                    ],
                 };
                 let style_color = style_color(&b.style);
                 div()
@@ -671,7 +696,13 @@ impl AppView {
                             .child(runes)
                             .child(labeled("Spells", div().flex().gap(px(4.)).children(spells)))
                             .child(labeled("Starter", div().flex().gap(px(4.)).children(start)))
-                            .child(labeled("Items (buy order)", div().flex().gap(px(4.)).children(items))),
+                            .child(labeled(from, div().flex().gap(px(4.)).children(items)))
+                            .when(!suggested.is_empty(), |d| {
+                                d.child(labeled(
+                                    "Suggested to finish (Poro)",
+                                    div().flex().gap(px(4.)).children(suggested),
+                                ))
+                            }),
                     )
                     .child(skills)
                     .into_any_element()

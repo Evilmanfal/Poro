@@ -8,7 +8,7 @@ use std::hash::Hash;
 
 use anyhow::Result;
 
-use super::ddragon::{ItemInfo, StaticData};
+use super::ddragon::{ItemInfo, Lane, StaticData};
 use super::deeplol::{self, Build, Game, RunePage};
 
 /// deeplol keeps up to ~80 recent games per matchup (10 per page).
@@ -30,6 +30,11 @@ pub struct MatchupBuild {
     pub boots: Option<u32>,
     /// Levels 1..15 (1 = Q .. 4 = R).
     pub skills: Vec<u32>,
+    /// Items added to finish a build that had fewer than six (five finished
+    /// items plus boots) in the games it came from. Shown apart from `items`.
+    pub suggested: Vec<u32>,
+    /// `boots` was suggested rather than bought in these games.
+    pub suggested_boots: bool,
     /// Filled in from deeplol's general builds (not this matchup's games).
     pub general: Option<GeneralStats>,
 }
@@ -258,6 +263,8 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
             let skills = most_common(entries.iter().map(|e| e.game.skill_order().into_iter().take(15).collect::<Vec<_>>()))
                 .unwrap_or_default();
             MatchupBuild {
+                suggested: Vec::new(),
+                suggested_boots: false,
                 style,
                 keystone,
                 games: entries.len(),
@@ -292,6 +299,8 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
             _ => (4, 14),
         };
         builds.push(MatchupBuild {
+            suggested: Vec::new(),
+            suggested_boots: false,
             style,
             keystone: runes.perks[0],
             games: 0,
@@ -306,7 +315,121 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
         });
     }
 
+    fill_builds(&mut builds, games, data, general);
     MatchupBuilds { sample: games.len(), builds }
+}
+
+/// The games played in `lane` (games with no known lane are left out).
+pub fn in_lane(games: &[Game], lane: Lane) -> Vec<Game> {
+    games.iter().filter(|g| g.lane() == Some(lane)).cloned().collect()
+}
+
+/// Finished items most bought in `games`, most first (ties by item id).
+fn ranked_items<'a>(games: impl Iterator<Item = &'a Game>, data: &StaticData) -> (Vec<u32>, Vec<u32>) {
+    let mut items: HashMap<u32, usize> = HashMap::new();
+    let mut boots: HashMap<u32, usize> = HashMap::new();
+    for g in games {
+        let (legendaries, b) = finished_items(g, &data.items);
+        for it in legendaries {
+            *items.entry(it).or_default() += 1;
+        }
+        if let Some(b) = b {
+            *boots.entry(b).or_default() += 1;
+        }
+    }
+    let sort = |m: HashMap<u32, usize>| {
+        let mut v: Vec<(u32, usize)> = m.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.into_iter().map(|(it, _)| it).collect::<Vec<u32>>()
+    };
+    (sort(items), sort(boots))
+}
+
+/// Whether `item` suits a build named `style` ("AP", "Lethality", …).
+fn fits_style(item: &ItemInfo, style: &str) -> bool {
+    match style {
+        "AP" | "AP Bruiser" => !(item.ad && !item.ap),
+        // Bruisers want durability, not glass-cannon lethality.
+        "Bruiser" => !(item.ap && !item.ad) && (item.health || item.tank),
+        "AD" | "Lethality" | "Crit" | "On-hit" => !(item.ap && !item.ad),
+        "Tank" => item.tank || item.health,
+        _ => true,
+    }
+}
+
+/// Looser than `fits_style`: only rules out the other damage type.
+fn fits_damage(item: &ItemInfo, style: &str) -> bool {
+    match style {
+        "AP" | "AP Bruiser" => !(item.ad && !item.ap),
+        "AD" | "Lethality" | "Crit" | "On-hit" | "Bruiser" => !(item.ap && !item.ad),
+        _ => true,
+    }
+}
+
+/// Fills builds with fewer than five finished items (plus boots) up to six,
+/// with the items most bought by the same style of build in this matchup,
+/// then in any game of this matchup, then in deeplol's general builds for
+/// the champion. Items that don't suit the build's style, or share a unique
+/// passive with an item already in it, are skipped.
+fn fill_builds(builds: &mut [MatchupBuild], games: &[Game], data: &StaticData, general: &[Build]) {
+    const FINISHED: usize = 5;
+    let (all_items, all_boots) = ranked_items(games.iter(), data);
+    let (general_items, general_boots): (Vec<u32>, Vec<u32>) = {
+        let mut items = Vec::new();
+        let mut boots = Vec::new();
+        for b in general {
+            for &it in &b.item.build {
+                match data.items.get(&it) {
+                    Some(x) if x.legendary && !items.contains(&it) => items.push(it),
+                    Some(x) if x.boots && !boots.contains(&it) => boots.push(it),
+                    _ => {}
+                }
+            }
+        }
+        (items, boots)
+    };
+    for b in builds.iter_mut() {
+        // Same-style games of this matchup.
+        let (style_items, style_boots) = ranked_items(
+            games.iter().filter(|g| {
+                let (items, _) = finished_items(g, &data.items);
+                !items.is_empty() && build_style(&items, &data.items) == b.style
+            }),
+            data,
+        );
+        let conflicts = |chosen: &[u32], it: u32| {
+            let Some(new) = data.items.get(&it) else { return true };
+            chosen.iter().filter_map(|c| data.items.get(c)).any(|c| {
+                c.name == new.name || c.passives.iter().any(|p| new.passives.contains(p))
+            })
+        };
+        let mut chosen: Vec<u32> = b.items.clone();
+        // First items that really suit the style; if that leaves the build
+        // short, anything that isn't the wrong damage type.
+        for strict in [true, false] {
+            for pool in [&style_items, &all_items, &general_items] {
+                for &it in pool.iter() {
+                    if chosen.len() >= FINISHED {
+                        break;
+                    }
+                    let Some(info) = data.items.get(&it) else { continue };
+                    let fits = if strict { fits_style(info, &b.style) } else { fits_damage(info, &b.style) };
+                    if !info.legendary || !fits || conflicts(&chosen, it) {
+                        continue;
+                    }
+                    chosen.push(it);
+                    b.suggested.push(it);
+                }
+            }
+        }
+        // Boots, if players of this champion buy them at all.
+        if b.boots.is_none() {
+            if let Some(&boots) = style_boots.first().or(all_boots.first()).or(general_boots.first()) {
+                b.boots = Some(boots);
+                b.suggested_boots = true;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +455,69 @@ mod tests {
                 let again: Vec<(String, Vec<u32>, Option<u32>)> =
                     super::summarize(&games, &data, &[], 3).builds.into_iter().map(|m| (m.style, m.items, m.boots)).collect();
                 assert_eq!(first, again, "{a} vs {b}");
+            }
+        }
+    }
+
+    /// Builds use only the selected lane's games and are filled to five
+    /// finished items plus boots, without duplicates, clashing unique
+    /// passives or off-style suggestions.
+    #[test]
+    fn live_builds_follow_lane_and_are_filled() {
+        use super::super::ddragon::Lane;
+        let data = super::super::ddragon::load().unwrap();
+        // Champions played in more than one lane.
+        for (a, b, lane) in [
+            (80, 64, Lane::Jungle),  // Pantheon vs Lee Sin
+            (80, 875, Lane::Top),    // Pantheon vs Sett
+            (517, 238, Lane::Middle), // Sylas vs Zed
+            (517, 64, Lane::Jungle), // Sylas vs Lee Sin
+            (56, 64, Lane::Jungle),  // Nocturne vs Lee Sin
+            (61, 7, Lane::Middle),   // Orianna vs LeBlanc
+        ] {
+            let all = super::all_games(a, b).unwrap();
+            let mut lanes: Vec<(Option<Lane>, usize)> = Vec::new();
+            for g in &all {
+                match lanes.iter_mut().find(|(l, _)| *l == g.lane()) {
+                    Some((_, n)) => *n += 1,
+                    None => lanes.push((g.lane(), 1)),
+                }
+            }
+            let games = super::in_lane(&all, lane);
+            assert!(games.iter().all(|g| g.lane() == Some(lane)));
+            let patch = super::deeplol::versions().unwrap().game_version_list[0].clone();
+            let general = super::deeplol::champion(a, &patch, true).unwrap_or_default().remove(&lane).map(|s| s.build_lst).unwrap_or_default();
+            let s = super::summarize(&games, &data, &general, 3);
+            println!(
+                "{} vs {} in {:?}: {} of {} games {:?}",
+                data.champion_name(a),
+                data.champion_name(b),
+                lane,
+                games.len(),
+                all.len(),
+                lanes
+            );
+            for m in &s.builds {
+                let name = |i: &u32| data.items[i].name.clone();
+                println!(
+                    "  {} ({}): {:?} + suggested {:?}, boots {:?}{}",
+                    m.style,
+                    if m.general.is_some() { "general".to_string() } else { format!("{} games", m.games) },
+                    m.items.iter().map(name).collect::<Vec<_>>(),
+                    m.suggested.iter().map(name).collect::<Vec<_>>(),
+                    m.boots.map(|b| name(&b)),
+                    if m.suggested_boots { " (suggested)" } else { "" }
+                );
+                let all_items: Vec<u32> = m.items.iter().chain(m.suggested.iter()).copied().collect();
+                assert!(all_items.len() >= 5, "{} build has {} finished items", m.style, all_items.len());
+                for (i, x) in all_items.iter().enumerate() {
+                    for y in &all_items[i + 1..] {
+                        let (x, y) = (&data.items[x], &data.items[y]);
+                        assert!(x.name != y.name, "duplicate {}", x.name);
+                        assert!(!x.passives.iter().any(|p| y.passives.contains(p)), "{} and {} share a passive", x.name, y.name);
+                    }
+                }
+                assert!(m.suggested.iter().all(|i| super::fits_damage(&data.items[i], &m.style)));
             }
         }
     }

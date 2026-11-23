@@ -250,7 +250,7 @@ impl AppView {
                 let lane = lane.or_else(|| super::main_lane(&lanes)).unwrap_or(Lane::Middle);
                 let general = lanes.get(&lane).map(|s| s.build_lst.clone()).unwrap_or_default();
                 let games = match opp_key {
-                    Some(o) => matchup_builds::all_games(my_key, o).unwrap_or_default(),
+                    Some(o) => matchup_builds::in_lane(&matchup_builds::all_games(my_key, o).unwrap_or_default(), lane),
                     None => Vec::new(),
                 };
                 Ok(matchup_builds::summarize(&games, &data, &general, 1).builds.into_iter().next())
@@ -576,7 +576,9 @@ fn item_build(s: &Snapshot, k: f32, cx: &mut App) -> AnyElement {
             .into_any_element()
     };
     let early = s.game.game_data.game_time < 180.0;
-    let ids: Vec<u32> = if early { b.starter.clone() } else { b.items.iter().chain(b.boots.iter()).copied().collect() };
+    // In game the full build (including items Poro suggested to finish it) is the guide.
+    let ids: Vec<u32> =
+        if early { b.starter.clone() } else { b.items.iter().chain(b.suggested.iter()).chain(b.boots.iter()).copied().collect() };
     let title = if early { format!("Start · {}", b.style) } else { format!("Core · {}", b.style) };
     let icons: Vec<AnyElement> = ids.into_iter().map(|i| icon(i, cx)).collect();
     div()
