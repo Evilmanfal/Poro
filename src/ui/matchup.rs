@@ -587,7 +587,10 @@ impl AppView {
         // whatever came first, then change a few seconds later.
         let loading = |l: &Loadable<_>| matches!(l, Loadable::Idle | Loadable::Loading);
         // (Each of these ends Ready or Failed, so this can't wait forever.)
-        let pending = ugg.is_none() || self.a_stats.is_loading() || (self.b.is_some() && loading(&self.history));
+        // On an older patch the games are picked by patch, so those must be in too.
+        let pending = ugg.is_none()
+            || self.a_stats.is_loading()
+            || (self.b.is_some() && (loading(&self.history) || (!self.is_latest_patch() && !self.history_patched)));
         if pending {
             let title = match self.b {
                 Some(b) => format!("{name} {} builds vs {}", self.lane.label(), data.champion_name(b)),

@@ -120,6 +120,14 @@ fn game_list(champion: u32, enemy: u32, player_type: &'static str) -> Result<Vec
 /// (high-elo players and one-tricks) plus its separate pro players' list,
 /// newest first.
 pub fn all_games(champion: u32, enemy: u32) -> Result<Vec<Game>> {
+    let mut out = game_lists(champion, enemy)?;
+    fill_patches(&mut out);
+    Ok(out)
+}
+
+/// Like `all_games`, without looking up each game's patch (`fill_patches`
+/// does that; it's the slow part, one request per game the first time).
+pub fn game_lists(champion: u32, enemy: u32) -> Result<Vec<Game>> {
     let (normal, pro) = std::thread::scope(|s| {
         let pro = s.spawn(move || game_list(champion, enemy, "Pro"));
         (game_list(champion, enemy, "ALL"), pro.join().unwrap_or_else(|_| Ok(Vec::new())))
@@ -131,22 +139,37 @@ pub fn all_games(champion: u32, enemy: u32) -> Result<Vec<Game>> {
         }
     }
     out.sort_by(|a, b| b.game_end_time.cmp(&a.game_end_time));
-    // Look up each game's patch, 10 at a time.
-    for chunk in out.chunks_mut(10) {
-        std::thread::scope(|s| {
-            for g in chunk.iter_mut() {
-                s.spawn(move || g.patch = deeplol::game_patch(&g.match_id).ok());
-            }
-        });
-    }
     Ok(out)
+}
+
+/// Looks up each game's patch (cached on disk once known), up to 24 at a
+/// time from a shared queue so one slow request doesn't hold up a batch.
+pub fn fill_patches(games: &mut [Game]) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    let ids: Vec<String> = games.iter().map(|g| g.match_id.clone()).collect();
+    let results: Vec<Mutex<Option<String>>> = ids.iter().map(|_| Mutex::new(None)).collect();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..24.min(ids.len()) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some(id) = ids.get(i) else { break };
+                *results[i].lock().unwrap() = deeplol::game_patch(id).ok();
+            });
+        }
+    });
+    for (g, r) in games.iter_mut().zip(results) {
+        g.patch = r.into_inner().unwrap();
+    }
 }
 
 /// "1 on 16.23, 26 on 16.22, 16 on 16.21", newest patch first.
 pub fn patch_breakdown(games: &[Game]) -> String {
     let mut counts: Vec<(String, usize)> = Vec::new();
-    for g in games {
-        let p = g.patch.clone().unwrap_or_else(|| "unknown patch".into());
+    // Games whose patch isn't known (yet) are left out.
+    for g in games.iter().filter(|g| g.patch.is_some()) {
+        let p = g.patch.clone().unwrap_or_default();
         match counts.iter_mut().find(|(k, _)| *k == p) {
             Some((_, n)) => *n += 1,
             None => counts.push((p, 1)),

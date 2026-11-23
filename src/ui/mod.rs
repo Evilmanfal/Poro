@@ -134,6 +134,8 @@ pub struct AppView {
     pub tips: Loadable<Tips>,
     /// Every game deeplol has of this matchup (for the matchup builds).
     pub history: Loadable<Vec<Game>>,
+    /// Each game in `history` has its patch looked up.
+    pub history_patched: bool,
     /// How many of the matchup's games the list shows.
     pub games_shown: usize,
     /// Games list filters (deeplol's lane and ALL/OTP/PRO buttons).
@@ -236,6 +238,7 @@ impl AppView {
             h2h: Loadable::Idle,
             tips: Loadable::Idle,
             history: Loadable::Idle,
+            history_patched: false,
             games_shown: GAMES_PAGE,
             games_lane: None,
             games_player: PlayerFilter::All,
@@ -542,11 +545,35 @@ impl AppView {
                     this.tips = Loadable::from(r);
                 }
             });
+            // The games first (enough for the builds on the live patch), then
+            // each game's patch, which takes longer the first time.
             self.history = Loadable::Loading;
-            spawn_job(cx, move || matchup_builds::all_games(a, b), move |this, r, _| {
-                if this.gen == gen {
-                    this.history = Loadable::from(r);
+            self.history_patched = false;
+            spawn_job(cx, move || matchup_builds::game_lists(a, b), move |this, r, cx| {
+                if this.gen != gen {
+                    return;
                 }
+                let games = r.as_ref().ok().cloned();
+                this.history = Loadable::from(r);
+                let Some(mut games) = games else {
+                    this.history_patched = true;
+                    return;
+                };
+                spawn_job(
+                    cx,
+                    move || {
+                        matchup_builds::fill_patches(&mut games);
+                        Ok(games)
+                    },
+                    move |this, r, _| {
+                        if this.gen == gen {
+                            if let Ok(games) = r {
+                                this.history = Loadable::Ready(games);
+                            }
+                            this.history_patched = true;
+                        }
+                    },
+                );
             });
         }
         cx.notify();
@@ -606,7 +633,12 @@ impl AppView {
     /// What `patch_games` covers, for headings.
     pub fn patch_games_label(&self, games: &[Game]) -> String {
         if self.is_latest_patch() {
-            format!("{} recent games ({})", games.len(), matchup_builds::patch_breakdown(games))
+            let breakdown = matchup_builds::patch_breakdown(games);
+            if breakdown.is_empty() {
+                format!("{} recent games", games.len())
+            } else {
+                format!("{} recent games ({breakdown})", games.len())
+            }
         } else {
             format!("{} games on patch {}", games.len(), self.patch_label())
         }
