@@ -578,8 +578,30 @@ impl AppView {
             .map(|s| s.build_lst.iter().filter_map(|b| GeneralBuild::from_deeplol(b, &dl_patch)).collect())
             .unwrap_or_default();
         let ugg_patch = self.patch_label().to_string();
-        if let Some(ugg) = self.ugg_builds_for(a, self.lane, cx) {
+        let ugg = self.ugg_builds_for(a, self.lane, cx);
+        if let Some(ugg) = &ugg {
             general.extend(ugg.iter().filter_map(|b| super::tierlist::ugg_general(data, b, &ugg_patch)));
+        }
+        // Show the builds only once every source is in (the matchup's games,
+        // deeplol's and U.GG's general builds); otherwise they'd show from
+        // whatever came first, then change a few seconds later.
+        let loading = |l: &Loadable<_>| matches!(l, Loadable::Idle | Loadable::Loading);
+        // (Each of these ends Ready or Failed, so this can't wait forever.)
+        let pending = ugg.is_none() || self.a_stats.is_loading() || (self.b.is_some() && loading(&self.history));
+        if pending {
+            let title = match self.b {
+                Some(b) => format!("{name} {} builds vs {}", self.lane.label(), data.champion_name(b)),
+                None => format!("{name} {} builds", self.lane.label()),
+            };
+            return card()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(section_title(title))
+                .child(div().text_size(px(13.)).text_color(rgb(MUTED)).child(
+                    "Gathering builds from this matchup's games, deeplol and U.GG…",
+                ))
+                .into_any_element();
         }
         let (games, note): (Vec<crate::data::deeplol::Game>, Option<String>) = match (self.b, &self.history) {
             (None, _) => (Vec::new(), None),
