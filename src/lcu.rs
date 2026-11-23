@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context as _, Result};
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::data::ddragon::Lane;
@@ -110,123 +109,21 @@ impl Lcu {
     }
 
     /// The current champ select, or None outside of one.
+    ///
+    /// Every field is read on its own with a default, so a field the client
+    /// sends as null, -1 or not at all can't make the whole session unreadable
+    /// (a typed parse did that once pick phase started).
     pub fn champ_select(&self) -> Option<ChampSelect> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Session {
-            local_player_cell_id: i64,
-            #[serde(default)]
-            my_team: Vec<Member>,
-            #[serde(default)]
-            their_team: Vec<Member>,
-            #[serde(default)]
-            actions: Vec<Vec<Action>>,
-            #[serde(default)]
-            bans: Bans,
-            #[serde(default)]
-            timer: Timer,
-            #[serde(default)]
-            queue_id: i64,
-            #[serde(default)]
-            game_id: u64,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Member {
-            cell_id: i64,
-            #[serde(default)]
-            champion_id: u32,
-            #[serde(default)]
-            champion_pick_intent: u32,
-            #[serde(default)]
-            assigned_position: String,
-            #[serde(default)]
-            spell1_id: u64,
-            #[serde(default)]
-            spell2_id: u64,
-            #[serde(default)]
-            game_name: String,
-            #[serde(default)]
-            tag_line: String,
-            #[serde(default)]
-            name_visibility_type: String,
-        }
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Action {
-            #[serde(default)]
-            actor_cell_id: i64,
-            #[serde(default)]
-            champion_id: u32,
-            #[serde(default)]
-            completed: bool,
-            #[serde(rename = "type", default)]
-            kind: String,
-            #[serde(default)]
-            is_ally_action: bool,
-        }
-        #[derive(Deserialize, Default)]
-        #[serde(rename_all = "camelCase")]
-        struct Bans {
-            #[serde(default)]
-            my_team_bans: Vec<u32>,
-            #[serde(default)]
-            their_team_bans: Vec<u32>,
-        }
-        #[derive(Deserialize, Default)]
-        struct Timer {
-            #[serde(default)]
-            phase: String,
-        }
-        let s: Session = serde_json::from_value(self.get("/lol-champ-select/v1/session").ok()?).ok()?;
-        let actions: Vec<&Action> = s.actions.iter().flatten().collect();
-        let locked = |cell: i64| actions.iter().any(|a| a.actor_cell_id == cell && a.kind == "pick" && a.completed);
-        let player = |m: &Member, mine: bool| {
-            let visible = !m.game_name.is_empty() && m.name_visibility_type != "HIDDEN";
-            CsPlayer {
-                cell: m.cell_id,
-                champion: m.champion_id,
-                intent: m.champion_pick_intent,
-                // Enemies only show champions once they're locked in.
-                locked: if mine { locked(m.cell_id) } else { m.champion_id != 0 },
-                lane: Lane::from_client(&m.assigned_position),
-                spells: (m.spell1_id as u32, m.spell2_id as u32),
-                name: visible.then(|| if m.tag_line.is_empty() { m.game_name.clone() } else { format!("{}#{}", m.game_name, m.tag_line) }),
-                is_me: mine && m.cell_id == s.local_player_cell_id,
-            }
-        };
-        let my_team: Vec<CsPlayer> = s.my_team.iter().map(|m| player(m, true)).collect();
-        let their_team: Vec<CsPlayer> = s.their_team.iter().map(|m| player(m, false)).collect();
-        let me = my_team.iter().find(|p| p.is_me)?.clone();
-        let my_champion = if me.champion != 0 { me.champion } else { me.intent };
-        let lane_opponent = me.lane.and_then(|lane| {
-            their_team.iter().find(|p| p.lane == Some(lane) && p.champion != 0).map(|p| p.champion)
-        });
-        let enemies = their_team.iter().map(|p| p.champion).filter(|&c| c != 0).collect();
-        // Bans: from the session's lists, or from completed ban actions.
-        let mut bans = (s.bans.my_team_bans.clone(), s.bans.their_team_bans.clone());
-        if bans.0.is_empty() && bans.1.is_empty() {
-            for a in actions.iter().filter(|a| a.kind == "ban" && a.completed && a.champion_id != 0) {
-                if a.is_ally_action {
-                    bans.0.push(a.champion_id);
-                } else {
-                    bans.1.push(a.champion_id);
-                }
+        let s = self.get("/lol-champ-select/v1/session").ok()?;
+        let parsed = parse_champ_select(&s);
+        if parsed.is_none() && s.get("myTeam").is_some() {
+            // There is a session but it couldn't be read: keep it for a bug report.
+            let path = crate::data::cache_dir().parent().map(|p| p.join("champselect-debug.json"));
+            if let Some(path) = path {
+                let _ = std::fs::write(path, serde_json::to_vec_pretty(&s).unwrap_or_default());
             }
         }
-        Some(ChampSelect {
-            my_champion,
-            my_locked: me.locked,
-            my_lane: me.lane,
-            lane_opponent,
-            enemies,
-            my_team,
-            their_team,
-            bans,
-            phase: s.timer.phase,
-            queue_id: s.queue_id,
-            game_id: s.game_id,
-        })
+        parsed
     }
 
     /// "None", "Lobby", "Matchmaking", "ChampSelect", "InProgress", "EndOfGame", …
@@ -354,6 +251,88 @@ impl Lcu {
         )?;
         Ok(())
     }
+}
+
+/// A number that may come as a float, a negative "none" (-1) or null: 0 then.
+fn num(v: &Value, key: &str) -> u64 {
+    match v.get(key) {
+        Some(Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64)).unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn text(v: &Value, key: &str) -> String {
+    v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+/// Reads `/lol-champ-select/v1/session`. None if it has no local player.
+fn parse_champ_select(s: &Value) -> Option<ChampSelect> {
+    let local_cell = s.get("localPlayerCellId").and_then(Value::as_i64)?;
+    let list = |key: &str| s.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
+    let actions: Vec<Value> = list("actions").into_iter().flat_map(|a| a.as_array().cloned().unwrap_or_default()).collect();
+    let cell_of = |v: &Value, key: &str| v.get(key).and_then(Value::as_i64).unwrap_or(-1);
+    let locked = |cell: i64| {
+        actions.iter().any(|a| cell_of(a, "actorCellId") == cell && text(a, "type") == "pick" && a.get("completed").and_then(Value::as_bool) == Some(true))
+    };
+    let player = |m: &Value, mine: bool| {
+        let cell = cell_of(m, "cellId");
+        let champion = num(m, "championId") as u32;
+        let (game_name, tag_line) = (text(m, "gameName"), text(m, "tagLine"));
+        let visible = !game_name.is_empty() && text(m, "nameVisibilityType") != "HIDDEN";
+        // Unset spells can come as huge numbers: keep only real spell ids.
+        let spell = |k: &str| u32::try_from(num(m, k)).ok().filter(|&id| id < 10_000).unwrap_or(0);
+        CsPlayer {
+            cell,
+            champion,
+            intent: num(m, "championPickIntent") as u32,
+            // Enemies only show champions once they're locked in.
+            locked: if mine { locked(cell) } else { champion != 0 },
+            lane: Lane::from_client(&text(m, "assignedPosition")),
+            spells: (spell("spell1Id"), spell("spell2Id")),
+            name: visible.then(|| if tag_line.is_empty() { game_name.clone() } else { format!("{game_name}#{tag_line}") }),
+            is_me: mine && cell == local_cell,
+        }
+    };
+    let my_team: Vec<CsPlayer> = list("myTeam").iter().map(|m| player(m, true)).collect();
+    let their_team: Vec<CsPlayer> = list("theirTeam").iter().map(|m| player(m, false)).collect();
+    let me = my_team.iter().find(|p| p.is_me)?.clone();
+    let my_champion = if me.champion != 0 { me.champion } else { me.intent };
+    let lane_opponent = me.lane.and_then(|lane| their_team.iter().find(|p| p.lane == Some(lane) && p.champion != 0).map(|p| p.champion));
+    let enemies = their_team.iter().map(|p| p.champion).filter(|&c| c != 0).collect();
+    // Bans: from the session's lists, or from completed ban actions.
+    let ban_list = |key: &str| -> Vec<u32> {
+        s.pointer(&format!("/bans/{key}"))
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|x| x.as_i64()).filter(|&x| x > 0).map(|x| x as u32).collect())
+            .unwrap_or_default()
+    };
+    let mut bans = (ban_list("myTeamBans"), ban_list("theirTeamBans"));
+    if bans.0.is_empty() && bans.1.is_empty() {
+        for a in actions.iter().filter(|a| text(a, "type") == "ban" && a.get("completed").and_then(Value::as_bool) == Some(true)) {
+            let champ = num(a, "championId") as u32;
+            if champ == 0 {
+                continue;
+            }
+            if a.get("isAllyAction").and_then(Value::as_bool) == Some(true) {
+                bans.0.push(champ);
+            } else {
+                bans.1.push(champ);
+            }
+        }
+    }
+    Some(ChampSelect {
+        my_champion,
+        my_locked: me.locked,
+        my_lane: me.lane,
+        lane_opponent,
+        enemies,
+        my_team,
+        their_team,
+        bans,
+        phase: s.pointer("/timer/phase").and_then(Value::as_str).unwrap_or("").to_string(),
+        queue_id: s.get("queueId").and_then(Value::as_i64).unwrap_or(0),
+        game_id: num(s, "gameId"),
+    })
 }
 
 /// The client's region ("NA", "EUW", …) as U.GG's region id ("na1", …).
@@ -551,5 +530,66 @@ mod tests {
         assert_eq!(found, Some(Some(dir.clone())));
         assert_eq!(creds, Some((54321, "secretpw".to_string())));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use serde_json::json;
+
+    /// Pick phase as the client may send it: null names, -1 "none" ids,
+    /// unset spells as u64::MAX, missing fields. It must still parse.
+    #[test]
+    fn pick_phase_with_nulls_parses() {
+        let s = json!({
+            "localPlayerCellId": 2,
+            "gameId": 7123456789u64,
+            "queueId": 420,
+            "timer": { "phase": "BAN_PICK" },
+            "bans": { "myTeamBans": [157, 238], "theirTeamBans": [11, -1] },
+            "actions": [
+                [ { "actorCellId": 2, "championId": 103, "completed": true, "type": "pick", "isAllyAction": true } ],
+                [ { "actorCellId": 7, "championId": -1, "completed": false, "type": "pick", "isAllyAction": false } ]
+            ],
+            "myTeam": [
+                { "cellId": 0, "championId": 0, "championPickIntent": -1, "assignedPosition": "top",
+                  "gameName": null, "tagLine": null, "nameVisibilityType": null, "spell1Id": 18446744073709551615u64, "spell2Id": 4 },
+                { "cellId": 2, "championId": 103, "championPickIntent": 103, "assignedPosition": "middle",
+                  "gameName": "Me", "tagLine": "NA1", "nameVisibilityType": "VISIBLE", "spell1Id": 4.0, "spell2Id": 14 },
+                { "cellId": 1 }
+            ],
+            "theirTeam": [
+                { "cellId": 5, "championId": 238, "assignedPosition": null, "gameName": "" },
+                { "cellId": 7, "championId": -1 }
+            ]
+        });
+        let cs = super::parse_champ_select(&s).expect("parses");
+        assert_eq!(cs.my_champion, 103);
+        assert!(cs.my_locked);
+        assert_eq!(cs.my_lane, Some(crate::data::ddragon::Lane::Middle));
+        assert_eq!(cs.enemies, vec![238]);
+        assert_eq!(cs.bans, (vec![157, 238], vec![11]));
+        assert_eq!(cs.my_team[0].spells, (0, 4));
+        assert_eq!(cs.my_team[0].name, None);
+        assert_eq!(cs.my_team[1].spells, (4, 14));
+        assert_eq!(cs.my_team[1].name.as_deref(), Some("Me#NA1"));
+        assert_eq!(cs.game_id, 7123456789);
+        assert_eq!(cs.phase, "BAN_PICK");
+    }
+
+    /// The old typed parse failed on exactly this kind of session.
+    #[test]
+    fn old_strict_parse_would_have_failed() {
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        #[serde(rename_all = "camelCase")]
+        struct Member {
+            #[serde(default)]
+            game_name: String,
+            #[serde(default)]
+            champion_pick_intent: u32,
+        }
+        assert!(serde_json::from_value::<Member>(json!({ "gameName": null })).is_err());
+        assert!(serde_json::from_value::<Member>(json!({ "championPickIntent": -1 })).is_err());
     }
 }

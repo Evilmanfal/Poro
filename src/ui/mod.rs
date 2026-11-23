@@ -706,7 +706,9 @@ impl AppView {
                         return (ClientStatus::ChampSelect(crate::lcu::demo_champ_select(t.elapsed().as_secs())), "ChampSelect".to_string());
                     }
                     let mut guard = lcu.lock().unwrap();
-                    if guard.as_ref().is_some_and(|l| !l.alive()) {
+                    // A slow reply (the client is busy switching phases) isn't a
+                    // closed client: only give up after two failed checks.
+                    if guard.as_ref().is_some_and(|l| !l.alive() && !l.alive()) {
                         *guard = None;
                     }
                     if guard.is_none() {
@@ -744,6 +746,13 @@ impl AppView {
 
     fn on_client_status(&mut self, status: ClientStatus, cx: &mut Context<Self>) {
         if status == self.client {
+            return;
+        }
+        // The client still says champ select: one unreadable poll doesn't end it.
+        if !matches!(status, ClientStatus::ChampSelect(_))
+            && self.phase == "ChampSelect"
+            && matches!(self.client, ClientStatus::ChampSelect(_))
+        {
             return;
         }
         if matches!(status, ClientStatus::ChampSelect(_)) && !matches!(self.client, ClientStatus::ChampSelect(_)) {
