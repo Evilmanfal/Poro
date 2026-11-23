@@ -155,6 +155,9 @@ pub struct AppView {
     /// lolalytics counters for the VS card's "Weak Against", by
     /// (champion, lane, patch); hardest matchups first.
     counter_cache: HashMap<(u32, Lane, String), Loadable<Vec<lolalytics::Counter>>>,
+    /// U.GG's builds by (champion, lane, patch), for Champion Matchup's
+    /// general builds when deeplol has none for that lane.
+    ugg_general: HashMap<(u32, Lane, String), Loadable<Vec<crate::data::ugg::UggBuild>>>,
     pub sort: (SortCol, bool),
     c_gen: u64,
 
@@ -247,6 +250,7 @@ impl AppView {
             input_t,
             counters: Loadable::Idle,
             counter_cache: HashMap::new(),
+            ugg_general: HashMap::new(),
             sort: (SortCol::VsWr, true),
             c_gen: 0,
             client: ClientStatus::NotRunning,

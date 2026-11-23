@@ -872,7 +872,31 @@ fn build_name(data: &StaticData, b: &UggBuild) -> String {
 /// U.GG lists a build's six runes in no particular order; the League client
 /// (and the rune tree view) wants keystone, the primary tree's rows, then
 /// the secondary tree's rows, then the shards top to bottom.
-fn ugg_page(data: &StaticData, b: &UggBuild) -> Option<RunePage> {
+/// A U.GG build as a general build for Champion Matchup.
+pub(super) fn ugg_general(data: &StaticData, b: &UggBuild, patch: &str) -> Option<crate::data::matchup_builds::GeneralBuild> {
+    use crate::data::matchup_builds::{GeneralBuild, GeneralStats};
+    let label = if b.label == "Recommended" { String::new() } else { format!("{} ", b.label) };
+    Some(GeneralBuild {
+        runes: ugg_page(data, b)?,
+        spells: match b.spells.as_slice() {
+            [a, c, ..] => (*a, *c),
+            _ => (4, 14),
+        },
+        starter: b.starter.clone(),
+        items: b.core.clone(),
+        extra: b.item_options.iter().flat_map(|slot| slot.iter().map(|o| o.item)).collect(),
+        skills: b.skills.iter().take(15).copied().collect(),
+        stats: GeneralStats {
+            source: "U.GG".into(),
+            detail: format!("U.GG {label}build, patch {patch}, Emerald+"),
+            win_rate: b.wins as f64 / b.games.max(1) as f64,
+            pick_rate: None,
+            games: b.games,
+        },
+    })
+}
+
+pub(super) fn ugg_page(data: &StaticData, b: &UggBuild) -> Option<RunePage> {
     let row_of = |tree: u32, id: u32| -> Option<usize> {
         data.rune_trees.iter().find(|t| t.id == tree)?.slots.iter().position(|slot| slot.contains(&id))
     };
@@ -889,4 +913,68 @@ fn ugg_page(data: &StaticData, b: &UggBuild) -> Option<RunePage> {
         sub_style: b.sub_style,
         perks: [primary[0].1, primary[1].1, primary[2].1, primary[3].1, secondary[0].1, secondary[1].1, shards[0], shards[1], shards[2]],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::data::ddragon::Lane;
+    use crate::data::{deeplol, matchup_builds, ugg};
+
+    /// Off-lane picks deeplol has no general builds for still get three
+    /// complete general builds, from U.GG.
+    #[test]
+    fn live_off_lane_general_builds() {
+        let data = crate::data::ddragon::load().unwrap();
+        let patch = deeplol::versions().unwrap().game_version_list[0].clone();
+        let picks = [
+            (24, Lane::Jungle),   // Jax
+            (80, Lane::Support),  // Pantheon
+            (517, Lane::Top),     // Sylas
+            (163, Lane::Middle),  // Taliyah
+            (43, Lane::Top),      // Karma
+            (86, Lane::Middle),   // Garen
+            (157, Lane::Top),     // Yasuo
+            (147, Lane::Bottom),  // Seraphine
+            (111, Lane::Jungle),  // Nautilus
+            (875, Lane::Jungle),  // Sett
+        ];
+        let mut missing_in_deeplol = 0;
+        for (champ, lane) in picks {
+            let lanes = deeplol::champion(champ, &patch, true).unwrap_or_default();
+            let deeplol_builds = lanes.get(&lane).map(|s| s.build_lst.len()).unwrap_or(0);
+            if deeplol_builds == 0 {
+                missing_in_deeplol += 1;
+            }
+            let mut general: Vec<matchup_builds::GeneralBuild> = lanes
+                .get(&lane)
+                .map(|s| s.build_lst.iter().filter_map(|b| matchup_builds::GeneralBuild::from_deeplol(b, &patch)).collect())
+                .unwrap_or_default();
+            let ugg = ugg::champion_builds(champ, lane, &patch, true).unwrap_or_default();
+            general.extend(ugg.iter().filter_map(|b| super::ugg_general(&data, b, &patch)));
+            let s = matchup_builds::summarize(&[], &data, &general, 3);
+            println!(
+                "{} {:?}: deeplol {deeplol_builds}, U.GG {} -> {} builds: {:?}",
+                data.champion_name(champ),
+                lane,
+                ugg.len(),
+                s.builds.len(),
+                s.builds
+                    .iter()
+                    .map(|b| format!(
+                        "{} {} [{}+{}{}]",
+                        b.general.as_ref().unwrap().source,
+                        b.style,
+                        b.items.len(),
+                        b.suggested.len(),
+                        if b.boots.is_some() { "+boots" } else { "" }
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            assert!(!s.builds.is_empty(), "no builds for {} {lane:?}", data.champion_name(champ));
+            for b in &s.builds {
+                assert!(b.items.len() + b.suggested.len() >= 5, "{} {lane:?} {} build is short", data.champion_name(champ), b.style);
+            }
+        }
+        println!("{missing_in_deeplol} of {} picks have no deeplol general builds", picks.len());
+    }
 }

@@ -9,7 +9,7 @@ use super::theme::*;
 use super::tips;
 use super::{AppView, Loadable, Slot};
 use crate::data::ddragon::{Lane, StaticData};
-use crate::data::matchup_builds;
+use crate::data::matchup_builds::{self, GeneralBuild};
 use crate::data::deeplol::LaneStats;
 use crate::images;
 use crate::text_input::TextInput;
@@ -551,11 +551,36 @@ impl AppView {
 
     /// Up to 3 builds for this exact matchup, from deeplol's matchup history
     /// (filled up with deeplol's general builds when the matchup has fewer).
+    /// U.GG's builds for a champion and lane on the selected patch, loading them once.
+    fn ugg_builds_for(&mut self, champ: u32, lane: Lane, cx: &mut Context<Self>) -> Option<Vec<crate::data::ugg::UggBuild>> {
+        let patch = self.patch_label().to_string();
+        let key = (champ, lane, patch.clone());
+        if let Some(l) = self.ugg_general.get(&key) {
+            return l.ready().cloned();
+        }
+        self.ugg_general.insert(key.clone(), Loadable::Loading);
+        let live = self.is_latest_patch();
+        super::spawn_job(cx, move || crate::data::ugg::champion_builds(champ, lane, &patch, live), move |this, r, _| {
+            // No U.GG data for that lane just means no extra builds.
+            this.ugg_general.insert(key, Loadable::Ready(r.unwrap_or_default()));
+        });
+        None
+    }
+
     fn render_builds(&mut self, data: &StaticData, cx: &mut Context<Self>) -> AnyElement {
         let Some(a) = self.a else { return div().into_any_element() };
         let name = data.champion_name(a);
-        let general = self.lane_stats(&self.a_stats).map(|s| s.build_lst.clone()).unwrap_or_default();
         let (dl_patch, _) = self.deeplol_patch();
+        // General builds for this lane: deeplol's (it only has a champion's
+        // main lanes), then U.GG's (any lane with enough games).
+        let mut general: Vec<GeneralBuild> = self
+            .lane_stats(&self.a_stats)
+            .map(|s| s.build_lst.iter().filter_map(|b| GeneralBuild::from_deeplol(b, &dl_patch)).collect())
+            .unwrap_or_default();
+        let ugg_patch = self.patch_label().to_string();
+        if let Some(ugg) = self.ugg_builds_for(a, self.lane, cx) {
+            general.extend(ugg.iter().filter_map(|b| super::tierlist::ugg_general(data, b, &ugg_patch)));
+        }
         let (games, note): (Vec<crate::data::deeplol::Game>, Option<String>) = match (self.b, &self.history) {
             (None, _) => (Vec::new(), None),
             (Some(_), Loadable::Ready(_)) => {
@@ -580,7 +605,7 @@ impl AppView {
                 format!("{name} {} builds vs {e} · from {}", self.lane.label(), self.patch_games_label(&games))
             }
             Some(e) => format!("{name} {} builds vs {e}", self.lane.label()),
-            None => format!("{name} {} builds · patch {dl_patch} (deeplol general builds)", self.lane.label()),
+            None => format!("{name} {} builds · general builds", self.lane.label()),
         };
         if summary.builds.is_empty() {
             return card()
@@ -619,16 +644,22 @@ impl AppView {
                             .into_any_element()
                     })
                     .collect();
-                let from = if b.general.is_some() { "Items (deeplol build)" } else { "Items (from games, buy order)" };
+                let from = match &b.general {
+                    Some(g) => format!("Items ({} build)", g.source),
+                    None => "Items (from games, buy order)".to_string(),
+                };
                 let skills = skill_order_row(&b.skills, 15);
                 let keystone = data.rune_name(b.keystone);
                 let stats = match &b.general {
-                    Some(g) => format!(
-                        "deeplol general build, patch {dl_patch} (not matchup-specific) · {} win rate · {} pick rate · {} games",
-                        pct(g.win_rate * 100.0),
-                        pct(g.pick_rate * 100.0),
-                        thousands(g.games)
-                    ),
+                    Some(g) => {
+                        let pick = g.pick_rate.map(|p| format!(" · {} pick rate", pct(p * 100.0))).unwrap_or_default();
+                        format!(
+                            "{} (not matchup-specific) · {} win rate{pick} · {} games",
+                            g.detail,
+                            pct(g.win_rate * 100.0),
+                            thousands(g.games)
+                        )
+                    }
                     None => format!(
                         "Used in {} of these {} games vs {} · {} won ({})",
                         b.games,
@@ -696,7 +727,7 @@ impl AppView {
                             .child(runes)
                             .child(labeled("Spells", div().flex().gap(px(4.)).children(spells)))
                             .child(labeled("Starter", div().flex().gap(px(4.)).children(start)))
-                            .child(labeled(from, div().flex().gap(px(4.)).children(items)))
+                            .child(labeled(&from, div().flex().gap(px(4.)).children(items)))
                             .when(!suggested.is_empty(), |d| {
                                 d.child(labeled(
                                     "Suggested to finish (Poro)",

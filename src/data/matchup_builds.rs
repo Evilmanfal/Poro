@@ -35,15 +35,58 @@ pub struct MatchupBuild {
     pub suggested: Vec<u32>,
     /// `boots` was suggested rather than bought in these games.
     pub suggested_boots: bool,
-    /// Filled in from deeplol's general builds (not this matchup's games).
+    /// A general build for the champion and lane (deeplol's or U.GG's),
+    /// added because the matchup had fewer distinct builds.
     pub general: Option<GeneralStats>,
 }
 
 #[derive(Clone, Debug)]
 pub struct GeneralStats {
+    /// "deeplol" or "U.GG".
+    pub source: String,
+    /// "deeplol general build, patch 16.23" or "U.GG AP build, patch 16.23, Emerald+".
+    pub detail: String,
     pub win_rate: f64,
-    pub pick_rate: f64,
+    pub pick_rate: Option<f64>,
     pub games: u64,
+}
+
+/// A champion's general build for a lane (not matchup-specific), from
+/// deeplol or U.GG, used to fill up the matchup's builds and items.
+#[derive(Clone, Debug)]
+pub struct GeneralBuild {
+    pub runes: RunePage,
+    pub spells: (u32, u32),
+    pub starter: Vec<u32>,
+    /// Items in buy order (may include boots).
+    pub items: Vec<u32>,
+    /// Further choices to finish it (U.GG's 4th/5th/6th item options), most played first.
+    pub extra: Vec<u32>,
+    pub skills: Vec<u32>,
+    pub stats: GeneralStats,
+}
+
+impl GeneralBuild {
+    pub fn from_deeplol(b: &Build, patch: &str) -> Option<GeneralBuild> {
+        Some(GeneralBuild {
+            runes: b.runes()?,
+            spells: match b.spell.build.as_slice() {
+                [a, c, ..] => (*a, *c),
+                _ => (4, 14),
+            },
+            starter: b.start_item.build.clone(),
+            items: b.item.build.clone(),
+            extra: Vec::new(),
+            skills: b.skill.detail.iter().take(15).copied().collect(),
+            stats: GeneralStats {
+                source: "deeplol".into(),
+                detail: format!("deeplol general build, patch {patch}"),
+                win_rate: b.win_rate,
+                pick_rate: Some(b.pick_rate),
+                games: b.games,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -196,7 +239,7 @@ fn most_common<T: Eq + Hash + Clone>(values: impl IntoIterator<Item = T>) -> Opt
 /// Groups the games into at most `max` builds, most played first. If there
 /// are fewer distinct builds than `max`, deeplol's general builds for the
 /// champion fill the remaining slots.
-pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usize) -> MatchupBuilds {
+pub fn summarize(games: &[Game], data: &StaticData, general: &[GeneralBuild], max: usize) -> MatchupBuilds {
     struct Entry<'a> {
         game: &'a Game,
         items: Vec<u32>,
@@ -280,38 +323,41 @@ pub fn summarize(games: &[Game], data: &StaticData, general: &[Build], max: usiz
         })
         .collect();
 
-    // Not enough distinct builds in this matchup: fill up with deeplol's
-    // general builds for the champion, skipping ones already shown.
+    // Not enough distinct builds in this matchup: fill up with general
+    // builds for the champion and lane (deeplol's, then U.GG's), skipping
+    // ones already shown.
     for b in general {
         if builds.len() >= max {
             break;
         }
-        let Some(runes) = b.runes() else { continue };
-        let all_items: Vec<u32> = b.item.build.clone();
-        let boots = all_items.iter().copied().find(|i| data.items.get(i).is_some_and(|x| x.boots));
-        let items: Vec<u32> = all_items.iter().copied().filter(|i| data.items.get(i).is_some_and(|x| x.legendary)).collect();
+        let boots = b.items.iter().copied().find(|i| data.items.get(i).is_some_and(|x| x.boots));
+        let items: Vec<u32> = b.items.iter().copied().filter(|i| data.items.get(i).is_some_and(|x| x.legendary)).collect();
         let style = build_style(&items, &data.items);
-        if items.is_empty() || style == "Unknown" || builds.iter().any(|m| m.style == style && m.keystone == runes.perks[0]) {
+        let keystone = b.runes.perks.first().copied().unwrap_or(0);
+        // A repeat only if it's the same keystone and the same first three items
+        // (the same style with other items is still another option).
+        let core = |v: &[u32]| {
+            let mut c: Vec<u32> = v.iter().take(3).copied().collect();
+            c.sort();
+            c
+        };
+        if items.is_empty() || style == "Unknown" || builds.iter().any(|m| m.keystone == keystone && core(&m.items) == core(&items)) {
             continue;
         }
-        let spells = match b.spell.build.as_slice() {
-            [a, c, ..] => (*a, *c),
-            _ => (4, 14),
-        };
         builds.push(MatchupBuild {
             suggested: Vec::new(),
             suggested_boots: false,
             style,
-            keystone: runes.perks[0],
+            keystone,
             games: 0,
             wins: 0,
-            runes,
-            spells,
-            starter: b.start_item.build.clone(),
+            runes: b.runes.clone(),
+            spells: b.spells,
+            starter: b.starter.clone(),
             items,
             boots,
-            skills: b.skill.detail.iter().take(15).copied().collect(),
-            general: Some(GeneralStats { win_rate: b.win_rate, pick_rate: b.pick_rate, games: b.games }),
+            skills: b.skills.clone(),
+            general: Some(b.stats.clone()),
         });
     }
 
@@ -368,22 +414,21 @@ fn fits_damage(item: &ItemInfo, style: &str) -> bool {
 
 /// Fills builds with fewer than five finished items (plus boots) up to six,
 /// with the items most bought by the same style of build in this matchup,
-/// then in any game of this matchup, then in deeplol's general builds for
-/// the champion. Items that don't suit the build's style, or share a unique
+/// then in any game of this matchup, then in the general builds for the
+/// champion and lane (their items, then U.GG's 4th–6th item options). Items that don't suit the build's style, or share a unique
 /// passive with an item already in it, are skipped.
-fn fill_builds(builds: &mut [MatchupBuild], games: &[Game], data: &StaticData, general: &[Build]) {
+fn fill_builds(builds: &mut [MatchupBuild], games: &[Game], data: &StaticData, general: &[GeneralBuild]) {
     const FINISHED: usize = 5;
     let (all_items, all_boots) = ranked_items(games.iter(), data);
     let (general_items, general_boots): (Vec<u32>, Vec<u32>) = {
         let mut items = Vec::new();
         let mut boots = Vec::new();
-        for b in general {
-            for &it in &b.item.build {
-                match data.items.get(&it) {
-                    Some(x) if x.legendary && !items.contains(&it) => items.push(it),
-                    Some(x) if x.boots && !boots.contains(&it) => boots.push(it),
-                    _ => {}
-                }
+        let ids = general.iter().flat_map(|b| b.items.iter()).chain(general.iter().flat_map(|b| b.extra.iter()));
+        for &it in ids {
+            match data.items.get(&it) {
+                Some(x) if x.legendary && !items.contains(&it) => items.push(it),
+                Some(x) if x.boots && !boots.contains(&it) => boots.push(it),
+                _ => {}
             }
         }
         (items, boots)
@@ -486,7 +531,14 @@ mod tests {
             let games = super::in_lane(&all, lane);
             assert!(games.iter().all(|g| g.lane() == Some(lane)));
             let patch = super::deeplol::versions().unwrap().game_version_list[0].clone();
-            let general = super::deeplol::champion(a, &patch, true).unwrap_or_default().remove(&lane).map(|s| s.build_lst).unwrap_or_default();
+            let general: Vec<super::GeneralBuild> = super::deeplol::champion(a, &patch, true)
+                .unwrap_or_default()
+                .remove(&lane)
+                .map(|s| s.build_lst)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|b| super::GeneralBuild::from_deeplol(b, &patch))
+                .collect();
             let s = super::summarize(&games, &data, &general, 3);
             println!(
                 "{} vs {} in {:?}: {} of {} games {:?}",
@@ -527,7 +579,14 @@ mod tests {
         let data = super::super::ddragon::load().unwrap();
         for (a, b, lane) in [(56, 64, super::super::ddragon::Lane::Jungle), (61, 7, super::super::ddragon::Lane::Middle)] {
             let games = super::all_games(a, b).unwrap();
-            let general = super::deeplol::champion(a, "16.22", true).unwrap().remove(&lane).unwrap().build_lst;
+            let general: Vec<super::GeneralBuild> = super::deeplol::champion(a, "16.22", true)
+                .unwrap()
+                .remove(&lane)
+                .unwrap()
+                .build_lst
+                .iter()
+                .filter_map(|b| super::GeneralBuild::from_deeplol(b, "16.22"))
+                .collect();
             let s = super::summarize(&games, &data, &general, 3);
             println!("{} vs {}: {} games", data.champion_name(a), data.champion_name(b), s.sample);
             for m in &s.builds {

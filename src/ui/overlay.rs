@@ -248,7 +248,15 @@ impl AppView {
             move || {
                 let lanes = deeplol::champion(my_key, &patch, true).unwrap_or_default();
                 let lane = lane.or_else(|| super::main_lane(&lanes)).unwrap_or(Lane::Middle);
-                let general = lanes.get(&lane).map(|s| s.build_lst.clone()).unwrap_or_default();
+                let mut general: Vec<matchup_builds::GeneralBuild> = lanes
+                    .get(&lane)
+                    .map(|s| s.build_lst.iter().filter_map(|b| matchup_builds::GeneralBuild::from_deeplol(b, &patch)).collect())
+                    .unwrap_or_default();
+                // deeplol only has a champion's main lanes: U.GG covers the rest.
+                if general.is_empty() {
+                    let builds = crate::data::ugg::champion_builds(my_key, lane, &patch, true).unwrap_or_default();
+                    general.extend(builds.iter().filter_map(|b| super::tierlist::ugg_general(&data, b, &patch)));
+                }
                 let games = match opp_key {
                     Some(o) => matchup_builds::in_lane(&matchup_builds::all_games(my_key, o).unwrap_or_default(), lane),
                     None => Vec::new(),
